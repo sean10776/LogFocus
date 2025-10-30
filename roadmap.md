@@ -3,3 +3,8 @@
 - [X] update focus mode when adding/removing filters or changing filter visibility
 - [X] Add support for editing
 - [ ] file specific filters
+- [ ] Add one click remove all filters
+- [ ] Add invert filter feature
+- [ ] Fix modify filter bug (not show the original setting after modifying pop up)
+- [ ] Add status show huge files processing
+- [ ] Enhance color selection when add new filter (e.g., avoid similar colors)
