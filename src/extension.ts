@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import {
     addFilter,
-    applyHighlight,
     deleteFilter,
     editFilter,
     refreshEditors,
@@ -11,47 +10,21 @@ import {
     addGroup,
     editGroup,
     deleteGroup,
-    saveProject,
     addProject,
     editProject,
     deleteProject,
     refreshSettings,
     selectProject,
-    updateExplorerTitle
+    setExclude
 } from "./commands";
-import { FilterTreeViewProvider } from "./filterTreeViewProvider";
-import { ProjectTreeViewProvider } from "./projectTreeViewProvider";
-import { FocusProvider } from "./focusProvider";
-import { Project, Group } from "./utils";
+import { createState, State } from "./utils";
 import { openSettings } from "./settings";
 
-export type State = {
-    inFocusMode: boolean;
-    projects: Project[];
-    groups: Group[];
-    decorations: vscode.TextEditorDecorationType[];
-    disposableFoldingRange: vscode.Disposable | null;
-    filterTreeViewProvider: FilterTreeViewProvider;
-    projectTreeViewProvider: ProjectTreeViewProvider;
-    focusProvider: FocusProvider;
-    globalStorageUri: vscode.Uri;
-};
+// Simple debounce with setTimeout
+let refreshTimeout: NodeJS.Timeout | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
-    //internal globals
-    const projects: Project[] = [];
-    const groups: Group[] = [];
-    const state: State = {
-        inFocusMode: false,
-        projects,
-        groups,
-        decorations: [],
-        disposableFoldingRange: null,
-        filterTreeViewProvider: new FilterTreeViewProvider(groups),
-        projectTreeViewProvider: new ProjectTreeViewProvider(projects),
-        focusProvider: new FocusProvider(groups),
-        globalStorageUri: context.globalStorageUri
-    };
+    const state: State = createState(context.globalStorageUri);
     refreshSettings(state);
 
     //tell vs code to open focus:... uris with state.focusProvider
@@ -68,32 +41,48 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(view);
 
+    // Simple title updater function that view can use directly
+    const updateTitle = () => {
+        const project = state.selectedProject;
+        view.title = project ? `Filters (${project.name})` : "Filters";
+    };
+    updateTitle(); // Initialize title
+
     //register projectTreeViewProvider under id 'filters.settings' which gets attached
     //to filter_project_setting in the Activity Bar according to package.json's contributes>views>filter_project_settings
     vscode.window.registerTreeDataProvider(
         "filters.settings",
         state.projectTreeViewProvider);
 
-    updateExplorerTitle(view, state);
-
-    //Add events listener
+    // event listeners, include visible editor change, active editor change, document change
     var disposableOnDidChangeVisibleTextEditors =
         vscode.window.onDidChangeVisibleTextEditors((event) => {
             refreshEditors(state);
         });
     context.subscriptions.push(disposableOnDidChangeVisibleTextEditors);
 
+    // Simple debounced refresh using setTimeout
+    const DEBOUNCE_DELAY = 500; // 500ms debounce delay
+
     var disposableOnDidChangeTextDocument =
         vscode.workspace.onDidChangeTextDocument((event) => {
-            refreshEditors(state);
+            // Clear existing timeout
+            if (refreshTimeout) {
+                clearTimeout(refreshTimeout);
+            }
+            
+            // Set new timeout
+            refreshTimeout = setTimeout(() => {
+                console.log("Document changed, refreshing editors...");
+                refreshEditors(state);
+                refreshTimeout = null;
+            }, DEBOUNCE_DELAY);
         });
     context.subscriptions.push(disposableOnDidChangeTextDocument);
 
     var disposableOnDidChangeActiveTextEditor =
         vscode.window.onDidChangeActiveTextEditor((event) => {
-            //update the filter counts for the current activate editor
-            applyHighlight(state, vscode.window.visibleTextEditors);
-            state.filterTreeViewProvider.refresh();
+            refreshEditors(state);
         });
     context.subscriptions.push(disposableOnDidChangeActiveTextEditor);
 
@@ -110,9 +99,8 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showErrorMessage('This command is excuted with button in Log Analysis Projects');
                 return;
             }
-            editProject(treeItem, state, () => {
-                updateExplorerTitle(view, state);
-            });
+            editProject(treeItem, state);
+            updateTitle();
         }
     );
     context.subscriptions.push(disposibleEditProject);
@@ -125,7 +113,7 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
             deleteProject(treeItem, state);
-            updateExplorerTitle(view, state);
+            updateTitle();
         });
     context.subscriptions.push(disposableDeleteProject);
 
@@ -138,7 +126,7 @@ export function activate(context: vscode.ExtensionContext) {
         "log-analysis.refreshSettings",
         () => {
             refreshSettings(state);
-            updateExplorerTitle(view, state);
+            updateTitle();
         });
     context.subscriptions.push(disposableRefreshSettings);
 
@@ -150,16 +138,11 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
             if (selectProject(treeItem, state)) {
-                updateExplorerTitle(view, state);
+                updateTitle();
                 vscode.commands.executeCommand('workbench.view.explorer');
             }
         });
     context.subscriptions.push(disposableSelectProject);
-
-    let disposableSaveProject = vscode.commands.registerCommand(
-        "log-analysis.saveProject",
-        () => saveProject(state));
-    context.subscriptions.push(disposableSaveProject);
 
     let disposableEnableVisibility = vscode.commands.registerCommand(
         "log-analysis.enableVisibility",
@@ -269,6 +252,30 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleEditGroup);
 
+    let disposableEnableExclude = vscode.commands.registerCommand(
+        "log-analysis.enableExclude",
+        (treeItem: vscode.TreeItem) => {
+            if (treeItem === undefined) {
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
+                return;
+            }
+            setExclude(true, treeItem, state);
+        }
+    );
+    context.subscriptions.push(disposableEnableExclude);
+
+    let disposableDisableExclude = vscode.commands.registerCommand(
+        "log-analysis.disableExclude",
+        (treeItem: vscode.TreeItem) => {
+            if (treeItem === undefined) {
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
+                return;
+            }
+            setExclude(false, treeItem, state);
+        }
+    );
+    context.subscriptions.push(disposableDisableExclude);
+
     let disposibleDeleteGroup = vscode.commands.registerCommand(
         "log-analysis.deleteGroup",
         (treeItem: vscode.TreeItem) => {
@@ -283,4 +290,10 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 // this method is called when your extension is deactivated
-export function deactivate() { }
+export function deactivate() {
+    // Clear any pending refresh timeout
+    if (refreshTimeout) {
+        clearTimeout(refreshTimeout);
+        refreshTimeout = null;
+    }
+}

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { Filter, Group } from "./utils";
+import { Group } from "./utils";
+import { Filter } from "./filter";
 
 //provides filters as tree items to be displayed on the sidebar
 export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -26,11 +27,6 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined> = this._onDidChangeTreeData.event;
 
     refresh(element?: vscode.TreeItem): void {
-        if (element === undefined) {
-            console.log("refresh all");
-        } else {
-            console.log("refresh item");
-        }
         this._onDidChangeTreeData.fire(element);
     }
 
@@ -52,7 +48,7 @@ export class GroupItem extends vscode.TreeItem {
     update(group: Group) {
         this.label = group.name;
         this.id = group.id;
-        this.filters = group.filters;
+        this.filters = Array.from(group.filters.values());
 
         if (group.isHighlighted) {
             if (group.isShown) {
@@ -87,7 +83,7 @@ export class GroupItem extends vscode.TreeItem {
 export class FilterItem extends vscode.TreeItem {
     constructor(filter: Filter) {
         super(filter.regex.toString(), vscode.TreeItemCollapsibleState.None);
-        this.contextValue = 'f-unlit-invisible';
+        this.contextValue = 'f-unlit-invisible-include'; // Set a proper initial value
         this.update(filter);
     }
 
@@ -96,28 +92,21 @@ export class FilterItem extends vscode.TreeItem {
         this.id = filter.id;
         this.iconPath = filter.iconPath;
 
-        if (filter.isHighlighted) {
-            if (filter.isShown) {
-                this.description = ` · ${filter.count}`;
-                this.contextValue = 'f-lit-visible';
-            } else {
-                this.description = '';
-                this.contextValue = 'f-lit-invisible';
-            }
+        // Build contextValue based on filter state
+        let contextValue = 'f-';
+        contextValue += filter.isHighlighted ? 'lit-' : 'unlit-';
+        contextValue += filter.isShown ? 'visible-' : 'invisible-';
+        contextValue += filter.isExclude ? 'exclude' : 'include';
+        
+        this.contextValue = contextValue as any;
+
+        if (filter.isShown) {
+            this.description = ` · ${filter.count}`;
         } else {
             this.description = '';
-            if (filter.isShown) {
-                this.contextValue = 'f-unlit-visible';
-            } else {
-                this.contextValue = 'f-unlit-invisible';
-            }
         }
     }
 
     //contextValue connects to package.json>menus>view/item/context
-    contextValue:
-        | "f-lit-visible"
-        | "f-unlit-visible"
-        | "f-lit-invisible"
-        | "f-unlit-invisible";
+    contextValue: string;
 }
