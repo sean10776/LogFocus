@@ -9,6 +9,7 @@ import {
     createGroup,
 } from "./utils";
 import { Filter, EditorInfo } from "./filter";
+import { FocusProvider } from "./focusProvider";
 
 export function applyHighlight(
     state: State,
@@ -46,7 +47,7 @@ export function refreshEditors(state: State) {
         metaData: {
             lineCount: editor.document.lineCount,
             isLargeFile: editor.document.getText().length > LARGE_FILE_CONFIG.SIZE_THRESHOLD,
-            isFocusMode: editor.document.uri.toString().startsWith("focus:"),
+            isFocusMode: FocusProvider.isFocusUri(editor.document.uri),
             isSelected: activatedEditor ? editor.document.uri.toString() === activatedEditor.document.uri.toString() : false,
         }
     }));
@@ -154,13 +155,14 @@ export function setExclude(
 }
 
 //turn on focus mode for the active editor. Will create a new tab if not already for the virtual document
-export function turnOnFocusMode(state: State) {
+export function turnOnFocusMode() {
     let editor = vscode.window.activeTextEditor;
     if (!editor) {
         return;
     }
-    let escapedUri = editor.document.uri.toString();
-    if (escapedUri.startsWith("focus:")) {
+
+    let originalUri = editor.document.uri;
+    if (FocusProvider.isFocusUri(originalUri)) {
         //avoid creating nested focus mode documents
         vscode.window.showInformationMessage(
             "You are on focus mode virtual document already!"
@@ -169,8 +171,7 @@ export function turnOnFocusMode(state: State) {
     }
 
     //set special schema
-    let virtualUri = vscode.Uri.parse("focus:" + escapedUri);
-    //because of the special schema, openTextDocument will use the focusProvider
+    let virtualUri = FocusProvider.virtualUri(originalUri);
     vscode.workspace
         .openTextDocument(virtualUri)
         .then((doc) => vscode.window.showTextDocument(doc));

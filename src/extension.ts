@@ -170,7 +170,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     let disposableTurnOnFocusMode = vscode.commands.registerCommand(
         "log-analysis.turnOnFocusMode",
-        () => turnOnFocusMode(state)
+        () => turnOnFocusMode()
     );
     context.subscriptions.push(disposableTurnOnFocusMode);
 

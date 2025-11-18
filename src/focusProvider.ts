@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { Project } from "./utils";
 import { Filter } from "./filter";
+import * as path from "path";
 
 /**
  * Provides read-only virtual documents that contain only lines matching shown filters.
@@ -32,11 +33,22 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
      * Provides read-only text content for virtual focus documents.
      * This method leverages Filter caching for improved performance.
      * 
-     * @param uri Virtual document URI in format "focus:<original-uri>"
+     * @param uri Virtual document URI in format "focus:/Focus: filename?source=<encoded-original-uri>"
      * @returns Promise<string> Filtered content as read-only text
      */
     async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-        const originalUri = vscode.Uri.parse(uri.path);
+        // Parse the original URI from the query parameter
+        const queryParams = new URLSearchParams(uri.query);
+        const originalUriString = queryParams.get('source');
+        
+        if (!originalUriString) {
+            // Fallback to old format for backward compatibility
+            const originalUri = vscode.Uri.parse(uri.path);
+            const sourceDocument = await vscode.workspace.openTextDocument(originalUri);
+            return this.generateFilteredContent(originalUri.toString(), sourceDocument);
+        }
+        
+        const originalUri = vscode.Uri.parse(decodeURIComponent(originalUriString));
         const sourceDocument = await vscode.workspace.openTextDocument(originalUri);
         return this.generateFilteredContent(originalUri.toString(), sourceDocument);
     }
@@ -137,5 +149,21 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
      */
     static isFocusUri(uri: vscode.Uri): boolean {
         return uri.scheme === 'focus';
+    }
+
+    /**
+     * Generate a virtual focus URI from an original document URI
+     * Creates a title similar to Git extension: "filename (Focus Mode) (full-path)"
+     */
+    static virtualUri(originalUri: vscode.Uri): vscode.Uri {
+        const fileName = path.basename(originalUri.fsPath);
+        
+        // Create a Git-like display format
+        // This will show as: "<Focus Mode>filename"
+        const displayName = `<Focus Mode> ${fileName}`;
+        
+        // Use the display name as the path component of the URI
+        // VS Code will use this as the tab title
+        return vscode.Uri.parse(`focus:${encodeURIComponent(displayName)}?source=${encodeURIComponent(originalUri.toString())}`);
     }
 }
