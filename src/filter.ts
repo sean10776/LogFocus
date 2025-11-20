@@ -226,7 +226,7 @@ export class Filter {
     public getMatchedLineNumbers(editorUri?: string): number[] {
         if (editorUri) {
             const editorInfo = this._activeEditors.get(editorUri);
-            if (!editorInfo) return [];
+            if (!editorInfo) {return [];}
             
             const cacheEntry = this._editorCache.get(editorUri);
             if (cacheEntry && this.isCacheValid(cacheEntry, editorInfo.editor.document, editorInfo.metaData)) {
@@ -273,9 +273,9 @@ export class Filter {
      * Check if cache is still valid
      */
     private isCacheValid(cacheEntry: EditorCacheEntry, document: vscode.TextDocument, metaData?: EditorMetaData): boolean {
-        if (cacheEntry.version !== document.version) return false;
-        if (cacheEntry.size !== Buffer.byteLength(document.getText(), 'utf8')) return false;
-        if (cacheEntry.contentHash !== this.calculateContentHash(document.getText())) return false;
+        if (cacheEntry.version !== document.version) {return false;}
+        if (cacheEntry.size !== Buffer.byteLength(document.getText(), 'utf8')) {return false;}
+        if (cacheEntry.contentHash !== this.calculateContentHash(document.getText())) {return false;}
         
         const maxAge = metaData?.isLargeFile ? this._cacheMaxAge / 2 : this._cacheMaxAge;
         const cacheAge = Date.now() - cacheEntry.lastAnalyzed;
@@ -392,7 +392,7 @@ export class Filter {
      * Enforce maximum cache size by removing oldest entries
      */
     private enforceMaxCacheSize(): void {
-        if (this._editorCache.size <= this._cacheMaxSize) return;
+        if (this._editorCache.size <= this._cacheMaxSize) {return;}
         
         // Sort by lastAnalyzed time and remove oldest
         const entries = Array.from(this._editorCache.entries())
@@ -431,7 +431,7 @@ export class Filter {
      * Apply decorations to specific editor
      */
     private applyDecorationsToEditor(editorInfo: EditorInfo, matchedRanges: vscode.Range[]): void {
-        if (!this._decoration) return;
+        if (!this._decoration) {return;}
 
         const editor = editorInfo.editor;
         const isFocusMode = editorInfo.metaData.isFocusMode || editorInfo.uri.toString().startsWith("focus:");

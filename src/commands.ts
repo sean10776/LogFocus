@@ -35,7 +35,7 @@ function refreshFilterGroupTreeView(state: State) {
 // refresh enter point will call this function for all editors or filter change
 export function refreshEditors(state: State) {
     const filters = state.selectedProject?.filters;
-    if (filters?.size == 0) {
+    if (filters?.size === 0) {
         return;
     }
 

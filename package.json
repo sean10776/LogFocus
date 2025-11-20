@@ -248,20 +248,17 @@
         "compile": "tsc -p ./",
         "lint": "eslint src --ext ts",
         "watch": "tsc -watch -p ./",
-        "pretest": "npm run compile && npm run lint",
-        "test": "node ./out/test/runTest.js"
+        "pretest": "npm run compile",
+        "test": "vscode-test"
     },
     "devDependencies": {
+        "@types/node": "^24.10.1",
         "@types/vscode": "^1.105.0",
-        "@types/glob": "^8.1.0",
-        "@types/mocha": "^10.0.10",
-        "@types/node": "^24.9.2",
-        "eslint": "^9.38.0",
-        "@typescript-eslint/eslint-plugin": "^8.46.2",
-        "@typescript-eslint/parser": "^8.46.2",
-        "glob": "^11.0.3",
-        "mocha": "^11.7.4",
-        "typescript": "^5.9.3",
-        "@vscode/test-electron": "^2.5.2"
+        "@typescript-eslint/eslint-plugin": "^8.47.0",
+        "@typescript-eslint/parser": "^8.47.0",
+        "@vscode/test-cli": "^0.0.12",
+        "@vscode/test-electron": "^2.5.2",
+        "eslint": "^9.39.1",
+        "typescript": "^5.9.3"
     }
 }
