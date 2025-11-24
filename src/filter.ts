@@ -503,9 +503,8 @@ export class Filter {
         } while (this.isHueTooSimilar(newHue, lastHue));
         
         lastHue = newHue;
-        const lightness = 50;
-        const normalColor = `hsl(${newHue}, 70%, ${lightness}%)`;
-        const invertedColor = `hsl(${newHue}, 70%, ${100 - lightness}%)`; // Inverted lightness
+        const normalColor = `hsl(${newHue}, 40%, 80%)`;
+        const invertedColor = `hsl(${newHue}, 50%, 40%)`;
         
         return { normal: normalColor, inverted: invertedColor };
     }
@@ -517,13 +516,12 @@ export class Filter {
         const match = color.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
         if (match) {
             const hue = parseInt(match[1]);
-            const saturation = parseInt(match[2]);
-            const lightness = parseInt(match[3]);
-            const invertedLightness = 100 - lightness;
+            const normalColor = `hsl(${hue}, 40%, 80%)`;
+            const invertedColor = `hsl(${hue}, 50%, 40%)`;
             
             return {
-                normal: color,
-                inverted: `hsl(${hue}, ${saturation}%, ${invertedLightness}%)`
+                normal: normalColor,
+                inverted: invertedColor
             };
         }
         return { normal: color, inverted: color }; // Fallback
