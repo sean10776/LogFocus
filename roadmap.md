@@ -3,3 +3,14 @@
 - [X] update focus mode when adding/removing filters or changing filter visibility
 - [X] Add support for editing
 - [ ] file specific filters
+- [ ] Add one click remove all filters
+- [x] Add invert filter feature
+- [x] Fix modify filter bug (not show the original setting after modifying pop up)
+- [ ] Add status show huge files processing
+- [x] Enhance color selection when add new filter (e.g., avoid similar colors)
+- [ ] Add color selection in UI for existing filters
+- [ ] Add multiple selection in filter tree view for bulk operations
+- [ ] Enhance UI
+- [ ] Add double click to edit filter, or F2 to edit filter like change the file name
+- [ ] Enhance readme and documentation
+- [x] Change focus mode tab title

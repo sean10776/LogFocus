@@ -1,83 +1,82 @@
 import * as vscode from "vscode";
+import { Filter } from "./filter";
+import { FocusProvider } from "./focusProvider";
+import { FilterTreeViewProvider } from "./filterTreeViewProvider";
+import { ProjectTreeViewProvider } from "./projectTreeViewProvider";
 
-// One filter corresponds to one line in the configuration file
-export type Filter = {
-  isHighlighted: boolean; // if the matching lines will be highlighted
-  isShown: boolean; //if the matching lines will be kept in focus mode
-  isExclude: boolean; // if the matching lines will be excluded
-  regex: RegExp;
-  color: string;
-  id: string; //random generated number
-  iconPath: vscode.Uri; //dataUri representing the isHighlighted/isNotHighlighted svg icon
-  count: number; //count of lines which match the filter in the active editor
+// Large file handling configuration
+export const LARGE_FILE_CONFIG = {
+    // Large file size threshold (10MB)
+    SIZE_THRESHOLD: 10 * 1024 * 1024,
+    
+    // Enable large file optimization
+    ENABLE_LARGE_FILE_OPTIMIZATION: true,
+    
+    // Maximum lines to process in large file mode
+    MAX_LINES_TO_PROCESS: 10000,
 };
 
-export type Group = {
-  filters: Filter[];
-  isHighlighted: boolean; // if the matching lines will be highlighted
-  isShown: boolean; //if the matching lines will be kept in focus mode
-  name: string;
-  id: string; //random generated number
-};
-
-export type Project = {
-  groups: Group[];
-  name: string;
-  id: string;
-  selected: boolean;
-};
-
-export function generateRandomColor(isExclude: boolean = false): string {
-  return isExclude
-    ? `hsl(${Math.floor(360 * Math.random())}, 40%, 80%)`
-    : `hsl(${Math.floor(360 * Math.random())}, 50%, 40%)`;
+export function generateId(category: 'filter' | 'group' | 'project'): string {
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).slice(2, 11);
+    return `${category}-${timestamp}-${randomString}`;
 }
 
-// Creates an svg icon representing a filter: a filled circle if the filter is highlighted, or an empty circle otherwise.
-// this icon is stored as a dataUri.
-export function generateSvgUri(
-  color: string,
-  isHighlighted: boolean,
-  isExclude: boolean
-): vscode.Uri {
-  let fullSvg, emptySvg;
+export type Group = {
+    filters: Map<string, Filter>; // id of filters in this group
+    isHighlighted: boolean; // if the matching lines will be highlighted
+    isShown: boolean; //if the matching lines will be kept in focus mode
+    name: string;
+    id: string; //random generated number
+};
+export function createGroup(name: string): Group {
+    return {
+        filters: new Map<string, Filter>(),
+        isHighlighted: true,
+        isShown: true,
+        name: name,
+        id: generateId("group")
+    };
+}
 
-  if (isExclude) {
-    // Do not enter sign - filled circle with white bar
-    fullSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-      <circle fill="${color}" cx="50" cy="50" r="50"/>
-      <rect x="10" y="40" width="80" height="20" fill="white"/>
-    </svg>`;
-    // Do not enter sign - outline only
-    emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-      <circle stroke="${color}" fill="transparent" stroke-width="10" cx="50" cy="50" r="45"/>
-      <rect x="15" y="41" width="70" height="18" fill="${color}"/>
-    </svg>`;
-  } else {
-    fullSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle fill="${color}" cx="50" cy="50" r="50"/></svg>`;
-    emptySvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle stroke="${color}" fill="transparent" stroke-width="10" cx="50" cy="50" r="45"/></svg>`;
-  }
+export type Project = {
+    filters: Map<string, Filter>; // For quick access to all filters in the project. The filter are same as in groups
+    groups: Map<string, Group>; // name to group
+    name: string;
+    id: string;
+    selected: boolean;
+};
+export function createProject(name: string): Project {
+    return {
+        filters: new Map<string, Filter>(),
+        groups: new Map<string, Group>(),
+        name: name,
+        id: name, //,
+        selected: false
+    };
+};
 
-  const svgContent = isHighlighted ? fullSvg : emptySvg;
-  const dataUri = `data:image/svg+xml;base64,${btoa(svgContent)}`;
-  return vscode.Uri.parse(dataUri);
+// Global state of the extension
+export type State = {
+    // Maps for fast lookups (automatically synced with arrays)
+    projectsMap: Map<string, Project>; // name to project
+    selectedProject: Project | null;
+    filterTreeViewProvider: FilterTreeViewProvider;
+    projectTreeViewProvider: ProjectTreeViewProvider;
+    focusProvider: FocusProvider;
+    globalStorageUri: vscode.Uri;
+};
+export function createState(globalStorageUri: vscode.Uri): State {
+    return {
+        projectsMap: new Map<string, Project>(),
+        selectedProject: null,
+        filterTreeViewProvider: new FilterTreeViewProvider([]),
+        projectTreeViewProvider: new ProjectTreeViewProvider([]),
+        focusProvider: new FocusProvider(),
+        globalStorageUri: globalStorageUri
+    };
 }
 
 export function setStatusBarMessage(message: string) {
-  vscode.window.setStatusBarMessage(`LOG ANALYSIS: ${message}`, 5000);
-}
-
-export function getProjectSelectedIndex(projects: Project[]): number {
-  const selectedIndex = projects.findIndex((p) => p.selected);
-  return selectedIndex;
-}
-
-export function setProjectSelectedFlag(projects: Project[], index: number) {
-  projects.forEach((p) => (p.selected = false));
-
-  if (index >= 0 && index < projects.length) {
-    projects[index].selected = true;
-  } else {
-    console.log(`Invalid index: ${index}`);
-  }
+    vscode.window.setStatusBarMessage(`LOG ANALYSIS: ${message}`, 5000);
 }

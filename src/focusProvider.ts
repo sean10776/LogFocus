@@ -1,110 +1,169 @@
 import * as vscode from "vscode";
-import { Filter, Group } from "./utils";
+import { Project } from "./utils";
+import { Filter } from "./filter";
+import * as path from "path";
 
-//Provide virtual documents as a strings that only contain lines matching shown filters.
-//These virtual documents have uris of the form "focus:<original uri>" where
-//<original uri> is the escaped uri of the original, unfocused document.
-//VSCode uses this provider to generate virtual read-only files based on real files
+/**
+ * Provides read-only virtual documents that contain only lines matching shown filters.
+ * 
+ * This provider creates virtual documents with URIs of the form "focus:<original uri>"
+ * where <original uri> is the escaped URI of the original document.
+ * 
+ * The documents created by this provider are automatically READ-ONLY by VS Code design.
+ * Users cannot edit these virtual documents - they serve as filtered views of the original files.
+ */
 export class FocusProvider implements vscode.TextDocumentContentProvider {
-  groups: Group[];
+    project: Project | null;
 
-  constructor(groups: Group[]) {
-    this.groups = groups;
-  }
-
-  //open the original document specified by the uri and return the focused version of its text
-  async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-    let originalUri = vscode.Uri.parse(uri.path);
-    let sourceCode = await vscode.workspace.openTextDocument(originalUri);
-
-    const { positiveCount } = this.countFilters();
-    let resultArr: string[] = [];
-    if (positiveCount > 0) {
-      resultArr = this.collectFilteredLines(sourceCode);
-    } else {
-      resultArr = this.collectAllLines(sourceCode);
+    constructor(project: Project | null = null) {
+        this.project = project;
     }
 
-    resultArr = this.removeExcludedLines(resultArr);
-
-    return resultArr.join("\n");
-  }
-
-  private removeExcludedLines(lines: string[]): string[] {
-    // Get all the ENABLED exclude filters
-    const excludeFilters: Filter[] = [];
-    for (const group of this.groups) {
-      for (const filter of group.filters) {
-        if (filter.isShown && filter.isExclude) {
-          excludeFilters.push(filter);
-        }
-      }
-    }
-
-    // Remove the lines that match the exclude filters
-    lines = lines.filter((line) => {
-      for (const filter of excludeFilters) {
-        if (filter.regex.test(line)) {
-          return false;
-        }
-      }
-      return true;
+    private static readonly focusDecorationType = vscode.window.createTextEditorDecorationType({
+        before: {
+            contentText: ">>>>>>>focus mode<<<<<<<",
+            color: "#888888",
+        },
     });
-    return lines;
-  }
-  private collectAllLines(sourceCode: vscode.TextDocument): string[] {
-    const resultArr: string[] = [""];
-    for (let lineIdx = 0; lineIdx < sourceCode.lineCount; lineIdx++) {
-      const line = sourceCode.lineAt(lineIdx).text;
-      resultArr.push(line);
-    }
-    return resultArr;
-  }
-  private collectFilteredLines(sourceCode: vscode.TextDocument): string[] {
-    const resultArr: string[] = [""];
-    for (let lineIdx = 0; lineIdx < sourceCode.lineCount; lineIdx++) {
-      const line = sourceCode.lineAt(lineIdx).text;
-      for (const group of this.groups) {
-        for (const filter of group.filters) {
-          if (!filter.isShown) {
-            continue;
-          }
-          let regex = filter.regex;
-          if (regex.test(line)) {
-            resultArr.push(line);
-            break;
-          }
+    private static readonly focusDecorationRangeArray = [
+        new vscode.Range(new vscode.Position(0, 0), new vscode.Position(1, 0)),
+    ];
+
+    /**
+     * Provides read-only text content for virtual focus documents.
+     * This method leverages Filter caching for improved performance.
+     * 
+     * @param uri Virtual document URI in format "focus:/Focus: filename?source=<encoded-original-uri>"
+     * @returns Promise<string> Filtered content as read-only text
+     */
+    async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+        // Parse the original URI from the query parameter
+        const queryParams = new URLSearchParams(uri.query);
+        const originalUriString = queryParams.get('source');
+        
+        if (!originalUriString) {
+            // Fallback to old format for backward compatibility
+            const originalUri = vscode.Uri.parse(uri.path);
+            const sourceDocument = await vscode.workspace.openTextDocument(originalUri);
+            return this.generateFilteredContent(originalUri.toString(), sourceDocument);
         }
-      }
+        
+        const originalUri = vscode.Uri.parse(decodeURIComponent(originalUriString));
+        const sourceDocument = await vscode.workspace.openTextDocument(originalUri);
+        return this.generateFilteredContent(originalUri.toString(), sourceDocument);
     }
-    return resultArr;
-  }
-  private countFilters(): { positiveCount: number; excludeCount: number } {
-    let positiveCount = 0;
-    let excludeCount = 0;
-    for (const group of this.groups) {
-      for (const filter of group.filters) {
-        if (filter.isShown) {
-          if (filter.isExclude) {
-            excludeCount++;
-          } else {
-            positiveCount++;
-          }
+
+    /**
+     * Generate filtered content using cached Filter results for optimal performance
+     */
+    private generateFilteredContent(originalUri: string, document: vscode.TextDocument): string {
+        const { positiveFilters, excludeFilters } = this.getActiveFilters();
+        
+        let resultLines: Set<number> = new Set();
+
+        if (positiveFilters.length > 0) {
+            // Collect line numbers from positive filters using their cached results
+            positiveFilters.forEach(filter => {
+                const lineNumbers = filter.getMatchedLineNumbers(originalUri.toString());
+                lineNumbers.forEach(lineNum => resultLines.add(lineNum));
+            });
+        } else {
+            // Include all lines if no positive filters
+            for (let i = 0; i < document.lineCount; i++) {
+                resultLines.add(i);
+            }
+            // Remove excluded lines using cached results
+            excludeFilters.forEach(filter => {
+                const excludedLines = filter.getMatchedLineNumbers(originalUri.toString());
+                excludedLines.forEach(lineNum => resultLines.delete(lineNum));
+            });
         }
-      }
+
+        // Convert to sorted array and build result
+        const sortedLines = Array.from(resultLines).sort((a, b) => a - b);
+        const resultArr = [""];
+        
+        sortedLines.forEach(lineNum => {
+            if (lineNum < document.lineCount) {
+                resultArr.push(document.lineAt(lineNum).text);
+            }
+        });
+
+        return resultArr.join("\n");
     }
-    return { positiveCount, excludeCount };
-  }
 
-  private onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri>();
-  readonly onDidChange = this.onDidChangeEmitter.event;
+    /**
+     * Get currently active positive and exclude filters
+     */
+    private getActiveFilters(): { positiveFilters: Filter[], excludeFilters: Filter[] } {
+        const positiveFilters: Filter[] = [];
+        const excludeFilters: Filter[] = [];
+        if (this.project === null) {
+            return { positiveFilters, excludeFilters };
+        }
 
-  //when this function gets called, the provideTextDocumentContent will be called again
-  refresh(uri: vscode.Uri): void {
-    this.onDidChangeEmitter.fire(uri);
-  }
+        this.project.filters.forEach(filter => {
+            if (filter.isShown) {
+                if (filter.isExclude) {
+                    excludeFilters.push(filter);
+                } else {
+                    positiveFilters.push(filter);
+                }
+            }
+        });
 
-  update(groups: Group[]) {
-    this.groups = groups;
-  }
+        return { positiveFilters, excludeFilters };
+    }
+
+    // Event emitter for document change notifications (required by VS Code API)
+    private onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri>();
+    readonly onDidChange = this.onDidChangeEmitter.event;
+
+    /**
+     * Refresh the virtual document content.
+     * This triggers VS Code to call provideTextDocumentContent again.
+     * 
+     * @param uri The URI of the virtual document to refresh
+     */
+    refresh(editor: vscode.TextEditor): void {
+        editor.setDecorations(FocusProvider.focusDecorationType, FocusProvider.focusDecorationRangeArray);
+        this.onDidChangeEmitter.fire(editor.document.uri);
+    }
+
+    /**
+     * Update the project used for filtering
+     * This will affect all subsequent document content generation
+     */
+    update(project: Project): void {
+        this.project = project;
+        // if switching projects, refresh all open focus editors
+        vscode.window.visibleTextEditors.forEach(editor => {
+            if (FocusProvider.isFocusUri(editor.document.uri)) {
+                this.refresh(editor);
+            }
+        });
+    }
+
+    /**
+     * Validate if a URI is a valid focus document URI
+     */
+    static isFocusUri(uri: vscode.Uri): boolean {
+        return uri.scheme === 'focus';
+    }
+
+    /**
+     * Generate a virtual focus URI from an original document URI
+     * Creates a title similar to Git extension: "filename (Focus Mode) (full-path)"
+     */
+    static virtualUri(originalUri: vscode.Uri): vscode.Uri {
+        const fileName = path.basename(originalUri.fsPath);
+        
+        // Create a Git-like display format
+        // This will show as: "<Focus Mode>filename"
+        const displayName = `<Focus Mode> ${fileName}`;
+        
+        // Use the display name as the path component of the URI
+        // VS Code will use this as the tab title
+        return vscode.Uri.parse(`focus:${encodeURIComponent(displayName)}?source=${encodeURIComponent(originalUri.toString())}`);
+    }
 }

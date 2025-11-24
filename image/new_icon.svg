@@ -1,0 +1,13 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+    <!-- Letter "L" -->
+    <path d="M16 16 L16 72 L56 72" stroke="#2E5EAA" stroke-width="16" fill="none" stroke-linecap="square"/>
+    
+    <!-- First parallel line -->
+    <line x1="12" y1="92" x2="112" y2="92" stroke="#2E5EAA" stroke-width="8" stroke-linecap="round"/>
+    
+    <!-- Second parallel line with arrow -->
+    <line x1="12" y1="108" x2="90" y2="108" stroke="#2E5EAA" stroke-width="8" stroke-linecap="round"/>
+    
+    <!-- Arrow triangle at the end of second line -->
+    <polygon points="100,108 116,116 116,100" fill="#2E5EAA"/>
+</svg>
