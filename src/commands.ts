@@ -461,8 +461,8 @@ export function refreshSettings(state: State) {
         state.selectedProject.filters.forEach((filter) => {
             filter.dispose();
         });
-        state.selectedProject = selectedProject;
     }
+    state.selectedProject = selectedProject;
 
     // Add a project named "NONAMED" in the following cases:
     // - A default project is generated for users who do not use the project feature.
