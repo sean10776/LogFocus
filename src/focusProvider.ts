@@ -152,6 +152,18 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
     }
 
     /**
+     * Extract the original document URI from a focus URI
+     */
+    static getOriginalUri(focusUri: vscode.Uri): vscode.Uri | null {
+        const queryParams = new URLSearchParams(focusUri.query);
+        const originalUriString = queryParams.get('source');
+        if (originalUriString) {
+            return vscode.Uri.parse(originalUriString);
+        }
+        return null;
+    }
+
+    /**
      * Generate a virtual focus URI from an original document URI
      * Creates a title similar to Git extension: "filename (Focus Mode) (full-path)"
      */

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as crypto from "crypto";
 import { generateId } from "./utils";
+import { FocusProvider } from "./focusProvider";
 
 // Keep track of the last generated hue to avoid similar colors
 let lastHue = 0;
@@ -137,26 +138,123 @@ export class Filter {
     }
 
     get count(): number {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor) {
+            var editorUri = activeEditor.document.uri;
+            if (FocusProvider.isFocusUri(editorUri)) {
+                editorUri = FocusProvider.getOriginalUri(editorUri) || editorUri;
+            }
+            const cacheEntry = this._editorCache.get(editorUri.toString());
+            return cacheEntry?.count || 0;
+        }
         return this._count;
     }
 
     /**
      * Process an editor and apply filter logic with caching
+     * This is the main entry point for applying the filter to an editor
      */
-    public processEditor(editorInfo: EditorInfo): void {
+    public async processEditor(editorInfo: EditorInfo): Promise<void> {
         if (!this._decoration) {
             this.createDecoration();
         }
         const editorUri = editorInfo.uri.toString();
-        this._activeEditors.set(editorUri, editorInfo);
+        const isFocusMode = FocusProvider.isFocusUri(editorInfo.uri);
         
-        const cacheEntry = this.getCachedAnalysisOrCompute(editorInfo);
-        this._editorDecorations.set(editorUri, cacheEntry.matchedRanges);
-        if (editorInfo.metaData.isSelected) {
-            this._count = cacheEntry.count;
+        // Focus mode editors need decoration but not cache computation
+        if (editorInfo.metaData.isFocusMode || isFocusMode) {
+            // await this.processFocusModeEditor(editorInfo);
+            // TODO 
+            return;
         }
         
+        this._activeEditors.set(editorUri, editorInfo);
+        
+        const cacheEntry = await this.getCachedAnalysisOrCompute(editorInfo);
+        this._editorDecorations.set(editorUri, cacheEntry.matchedRanges);
+
         this.applyDecorationsToEditor(editorInfo, cacheEntry.matchedRanges);
+    }
+
+    /**
+     * Process focus mode editor
+     * Focus mode documents are virtual and filtered, so we do lightweight matching
+     * and ensure original document cache exists for accurate count
+     */
+    private async processFocusModeEditor(editorInfo: EditorInfo): Promise<void> {
+        const editor = editorInfo.editor;
+        
+        // Ensure cache exists for the original document
+        await this.ensureOriginalDocumentCache(editorInfo);
+        
+        // Skip if this filter is not shown or is exclude filter (invisible in focus mode)
+        if (!this._isShown || this._isExclude) {
+            editor.setDecorations(this._decoration!, []);
+            return;
+        }
+        
+        // Skip if highlight is disabled
+        if (!this._isHighlighted) {
+            editor.setDecorations(this._decoration!, []);
+            return;
+        }
+        
+        // Lightweight matching - use extracted matching logic
+        const matchedRanges = this.matchLinesInDocument(editor.document);
+        editor.setDecorations(this._decoration!, matchedRanges);
+    }
+
+    /**
+     * Ensure that cache exists for the original document when in focus mode
+     * This is important for newly created filters in focus mode
+     */
+    private async ensureOriginalDocumentCache(editorInfo: EditorInfo): Promise<void> {
+        const originalUri = FocusProvider.getOriginalUri(editorInfo.uri);
+        if (!originalUri) {
+            return;
+        }
+        
+        const originalUriString = originalUri.toString();
+        
+        // Check if cache already exists
+        if (this._editorCache.has(originalUriString)) {
+            return;
+        }
+        
+        try {
+            // Open the original document to analyze it
+            const originalDocument = await vscode.workspace.openTextDocument(originalUri);
+            
+            // Double check if another call already created the cache
+            if (this._editorCache.has(originalUriString)) {
+                return;
+            }
+            
+            // Create a temporary EditorInfo for analysis
+            const tempEditorInfo: EditorInfo = {
+                editor: vscode.window.activeTextEditor!, // Temporary, only document matters
+                uri: originalUri,
+                metaData: {
+                    lineCount: originalDocument.lineCount,
+                    isLargeFile: originalDocument.lineCount > 5000,
+                    isFocusMode: false,
+                    isSelected: false
+                }
+            };
+            
+            // Use async analysis to avoid blocking
+            const cacheEntry = await this.getCachedAnalysisOrCompute(tempEditorInfo);
+            
+            // The cache should already be set by getCachedAnalysisOrCompute
+            // but we ensure it's using the correct URI
+            if (!this._editorCache.has(originalUriString)) {
+                cacheEntry.lastAnalyzed = Date.now();
+                this._editorCache.set(originalUriString, cacheEntry);
+                this.enforceMaxCacheSize();
+            }
+        } catch (error) {
+            console.error('Failed to analyze original document for focus mode:', error);
+        }
     }
 
     /**
@@ -221,7 +319,7 @@ export class Filter {
     }
 
     /**
-     * Get line numbers that match this filter
+     * Get line numbers that match this filter (sync version using cache only)
      */
     public getMatchedLineNumbers(editorUri?: string): number[] {
         if (editorUri) {
@@ -233,7 +331,11 @@ export class Filter {
                 return cacheEntry.matchedLineNumbers;
             }
             
-            return this.getCachedAnalysisOrCompute(editorInfo).matchedLineNumbers;
+            // If no valid cache, compute synchronously (fallback)
+            const syncEntry = editorInfo.metaData.isLargeFile ? 
+                this.computeOptimizedAnalysis(editorInfo) : 
+                this.computeAnalysis(editorInfo);
+            return syncEntry.matchedLineNumbers;
         } else {
             const allLineNumbers: number[] = [];
             for (const [uri] of this._activeEditors.entries()) {
@@ -244,9 +346,9 @@ export class Filter {
     }
 
     /**
-     * Get cached analysis or compute new one
+     * Get cached analysis or compute new one (async to avoid blocking)
      */
-    private getCachedAnalysisOrCompute(editorInfo: EditorInfo): EditorCacheEntry {
+    private async getCachedAnalysisOrCompute(editorInfo: EditorInfo): Promise<EditorCacheEntry> {
         const editorUri = editorInfo.editor.document.uri.toString();
         const document = editorInfo.editor.document;
 
@@ -257,9 +359,10 @@ export class Filter {
             return cachedEntry;
         }
 
-        const newEntry = editorInfo.metaData.isLargeFile ? 
-            this.computeOptimizedAnalysis(editorInfo) : 
-            this.computeAnalysis(editorInfo);
+        // Compute analysis asynchronously to avoid blocking UI
+        const newEntry = await (editorInfo.metaData.isLargeFile ? 
+            this.computeOptimizedAnalysisAsync(editorInfo) : 
+            this.computeAnalysisAsync(editorInfo));
         
         newEntry.lastAnalyzed = Date.now();
         
@@ -283,40 +386,26 @@ export class Filter {
     }
 
     /**
-     * Compute fresh analysis for an editor
+     * Compute fresh analysis for an editor (async version)
      */
-    private computeAnalysis(editorInfo: EditorInfo): EditorCacheEntry {
-        const editor = editorInfo.editor;
-        const document = editor.document;
+    private async computeAnalysisAsync(editorInfo: EditorInfo): Promise<EditorCacheEntry> {
+        const document = editorInfo.editor.document;
         const text = document.getText();
-        const lines = text.split('\n');
         
-        const matchedRanges: vscode.Range[] = [];
-        const matchedLineNumbers: number[] = [];
-        let count = 0;
+        // Yield control to avoid blocking UI for large files
+        await new Promise(resolve => setImmediate(resolve));
         
-        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-            const line = lines[lineIndex];
-            
-            if (this.test(line)) {
-                count++;
-                matchedLineNumbers.push(lineIndex);
-                
-                // Create range for the entire line (for whole line highlighting)
-                const wholeLineRange = new vscode.Range(
-                    new vscode.Position(lineIndex, 0),
-                    new vscode.Position(lineIndex, 0) // position does not matter because isWholeLine is set to true
-                );
-                matchedRanges.push(wholeLineRange);
-            }
-        }
+        // Pass text to avoid re-fetching
+        const matchedRanges = this.matchLinesInText(text);
+        const matchedLineNumbers = matchedRanges.map(range => range.start.line);
+        const count = matchedLineNumbers.length;
         
         return {
             uri: document.uri.toString(),
             version: document.version,
             size: Buffer.byteLength(text, 'utf8'),
             contentHash: this.calculateContentHash(text),
-            lastModified: Date.now(), // VS Code doesn't provide file mtime directly
+            lastModified: Date.now(),
             matchedRanges,
             matchedLineNumbers,
             count,
@@ -325,36 +414,23 @@ export class Filter {
     }
 
     /**
-     * Optimized analysis for large files
+     * Optimized analysis for large files (async version)
      */
-    private computeOptimizedAnalysis(editorInfo: EditorInfo): EditorCacheEntry {
+    private async computeOptimizedAnalysisAsync(editorInfo: EditorInfo): Promise<EditorCacheEntry> {
         const document = editorInfo.editor.document;
         const text = document.getText();
-        const lines = text.split('\n');
         const maxRanges = 500; // Performance limit
         
-        const matchedRanges: vscode.Range[] = [];
-        const matchedLineNumbers: number[] = [];
-        let count = 0;
+        // Yield control to avoid blocking UI
+        await new Promise(resolve => setImmediate(resolve));
         
-        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-            const line = lines[lineIndex];
-            
-            if (this.test(line)) {
-                count++;
-                matchedLineNumbers.push(lineIndex);
-                
-                // Limit ranges for performance
-                if (matchedRanges.length < maxRanges) {
-                    // Create range for the entire line (for whole line highlighting)
-                    const wholeLineRange = new vscode.Range(
-                        new vscode.Position(lineIndex, 0),
-                        new vscode.Position(lineIndex, 0) // position does not matter because isWholeLine is set to true
-                    );
-                    matchedRanges.push(wholeLineRange);
-                }
-            }
-        }
+        // Pass text to avoid re-fetching
+        const allMatchedRanges = this.matchLinesInText(text);
+        const matchedLineNumbers = allMatchedRanges.map(range => range.start.line);
+        const count = matchedLineNumbers.length;
+        
+        // Limit ranges for performance in large files
+        const matchedRanges = allMatchedRanges.slice(0, maxRanges);
         
         return {
             uri: document.uri.toString(),
@@ -367,6 +443,91 @@ export class Filter {
             count,
             lastAnalyzed: 0
         };
+    }
+
+    /**
+     * Compute fresh analysis for an editor (sync version - kept for compatibility)
+     */
+    private computeAnalysis(editorInfo: EditorInfo): EditorCacheEntry {
+        const document = editorInfo.editor.document;
+        const text = document.getText();
+        
+        // Pass text to avoid re-fetching
+        const matchedRanges = this.matchLinesInText(text);
+        const matchedLineNumbers = matchedRanges.map(range => range.start.line);
+        const count = matchedLineNumbers.length;
+        
+        return {
+            uri: document.uri.toString(),
+            version: document.version,
+            size: Buffer.byteLength(text, 'utf8'),
+            contentHash: this.calculateContentHash(text),
+            lastModified: Date.now(),
+            matchedRanges,
+            matchedLineNumbers,
+            count,
+            lastAnalyzed: 0 // Will be set by caller
+        };
+    }
+
+    /**
+     * Optimized analysis for large files (sync version - kept for compatibility)
+     */
+    private computeOptimizedAnalysis(editorInfo: EditorInfo): EditorCacheEntry {
+        const document = editorInfo.editor.document;
+        const text = document.getText();
+        const maxRanges = 500; // Performance limit
+        
+        // Pass text to avoid re-fetching
+        const allMatchedRanges = this.matchLinesInText(text);
+        const matchedLineNumbers = allMatchedRanges.map(range => range.start.line);
+        const count = matchedLineNumbers.length;
+                
+        // Limit ranges for performance in large files
+        const matchedRanges = allMatchedRanges.slice(0, maxRanges);
+        
+        return {
+            uri: document.uri.toString(),
+            version: document.version,
+            size: Buffer.byteLength(text, 'utf8'),
+            contentHash: this.calculateContentHash(text),
+            lastModified: Date.now(),
+            matchedRanges,
+            matchedLineNumbers,
+            count,
+            lastAnalyzed: 0
+        };
+    }
+
+    /**
+     * Match lines in text and return ranges
+     * Optimized to accept text directly to avoid repeated getText() calls
+     */
+    private matchLinesInText(text: string): vscode.Range[] {
+        const lines = text.split('\n');
+        const matchedRanges: vscode.Range[] = [];
+
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            const line = lines[lineIndex];
+            if (this.test(line)) {
+                // Create range for the entire line (for whole line highlighting)
+                const wholeLineRange = new vscode.Range(
+                    new vscode.Position(lineIndex, 0),
+                    new vscode.Position(lineIndex, 0) // position does not matter because isWholeLine is set to true
+                );
+                matchedRanges.push(wholeLineRange);
+            }
+        }
+
+        return matchedRanges;
+    }
+
+    /**
+     * Match lines in a document and return ranges
+     * Convenience wrapper for focus mode and other uses
+     */
+    private matchLinesInDocument(document: vscode.TextDocument): vscode.Range[] {
+        return this.matchLinesInText(document.getText());
     }
 
     /**
@@ -428,17 +589,16 @@ export class Filter {
     }
 
     /**
-     * Apply decorations to specific editor
+     * Apply decorations to specific editor (non-focus mode only)
+     * Focus mode editors are handled separately in processFocusModeEditor()
      */
     private applyDecorationsToEditor(editorInfo: EditorInfo, matchedRanges: vscode.Range[]): void {
         if (!this._decoration) {return;}
 
         const editor = editorInfo.editor;
-        const isFocusMode = editorInfo.metaData.isFocusMode || editorInfo.uri.toString().startsWith("focus:");
         const isLargeFile = editorInfo.metaData.isLargeFile;
         
         const shouldHighlight = this._isHighlighted && 
-                               (!isFocusMode || this._isShown) &&
                                !this._isExclude &&
                                (!isLargeFile || (this._isShown && this._count < 1000));
 

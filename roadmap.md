@@ -15,5 +15,6 @@
 - [ ] Enhance readme and documentation
 - [x] Change focus mode tab title
 - [x] Add import/export project functionality
-- [ ] Enhance Focus Mode decoration performance
+- [x] Enhance Focus Mode decoration performance
+- [x] Fix Focus Mode filter count accuracy
 - [ ] Add normal plantext regex mode

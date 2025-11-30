@@ -214,6 +214,7 @@ export function addFilter(treeItem: vscode.TreeItem, state: State) {
             state.selectedProject?.filters.set(filter.id, filter); // for fast lookup
             refreshEditors(state);
             refreshFilterGroupTreeView(state);
+            updateFilterTreeViewAndFocusProvider(state);
             saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
         });
 }
