@@ -8,7 +8,7 @@
         "url": "https://github.com/sean10776/LogFocus.git"
     },
     "icon": "image/new_icon.png",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "engines": {
         "vscode": "^1.49.0"
     },
