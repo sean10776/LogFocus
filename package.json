@@ -47,14 +47,19 @@
                 "icon": "$(paintcan)"
             },
             {
-                "command": "logfocus.enableVisibility",
-                "title": "Enable Visbility",
+                "command": "logfocus.setFocusIncluded",
+                "title": "Include in Focus",
                 "icon": "$(eye)"
             },
             {
-                "command": "logfocus.disableVisibility",
-                "title": "Disable Visbility",
+                "command": "logfocus.setFocusExcluded",
+                "title": "Exclude from Focus",
                 "icon": "$(eye-closed)"
+            },
+            {
+                "command": "logfocus.setFocusNone",
+                "title": "Ignore in Focus",
+                "icon": "$(circle-slash)"
             },
             {
                 "command": "logfocus.turnOnFocusMode",
@@ -74,16 +79,6 @@
             {
                 "command": "logfocus.addFilter",
                 "title": "Add a Filter",
-                "icon": "$(plus)"
-            },
-            {
-                "command": "logfocus.enableExclude",
-                "title": "Exclude",
-                "icon": "$(dash)"
-            },
-            {
-                "command": "logfocus.disableExclude",
-                "title": "Include",
                 "icon": "$(plus)"
             },
             {
@@ -121,8 +116,9 @@
                 "icon": "$(export)"
             },
             {
-                "command": "logfocus.showFilterStats",
-                "title": "LogFocus: Show Filter and Cache Statistics"
+                "command": "logfocus.toggleFiltering",
+                "title": "Toggle Filtering Mode",
+                "icon": "$(filter)"
             },
             {
                 "command": "logfocus.importProject",
@@ -138,14 +134,19 @@
                     "group": "inline@1"
                 },
                 {
-                    "command": "logfocus.enableExclude",
-                    "when": "view == filters && viewItem =~ /^f-/ && viewItem =~ /-include/",
+                    "command": "logfocus.setFocusIncluded",
+                    "when": "view == filters && viewItem =~ /(excluded|none)$/",
                     "group": "inline@1.5"
                 },
                 {
-                    "command": "logfocus.disableExclude",
-                    "when": "view == filters && viewItem =~ /^f-/ && viewItem =~ /-exclude/",
-                    "group": "inline@1.5"
+                    "command": "logfocus.setFocusExcluded",
+                    "when": "view == filters && viewItem =~ /(included|none)$/",
+                    "group": "inline@1.6"
+                },
+                {
+                    "command": "logfocus.setFocusNone",
+                    "when": "view == filters && viewItem =~ /(included|excluded)$/",
+                    "group": "inline@1.7"
                 },
                 {
                     "command": "logfocus.editGroup",
@@ -169,23 +170,13 @@
                 },
                 {
                     "command": "logfocus.disableHighlight",
-                    "when": "view == filters && viewItem =~ /-lit/",
+                    "when": "view == filters && viewItem =~ /-lit-/",
                     "group": "inline@3"
                 },
                 {
                     "command": "logfocus.enableHighlight",
-                    "when": "view == filters && viewItem =~ /-unlit/",
+                    "when": "view == filters && viewItem =~ /-unlit-/",
                     "group": "inline@3"
-                },
-                {
-                    "command": "logfocus.disableVisibility",
-                    "when": "view == filters && viewItem =~ /-visible/",
-                    "group": "inline@4"
-                },
-                {
-                    "command": "logfocus.enableVisibility",
-                    "when": "view == filters && viewItem =~ /-invisible/",
-                    "group": "inline@4"
                 },
                 {
                     "command": "logfocus.deleteGroup",
@@ -205,14 +196,19 @@
             ],
             "view/title": [
                 {
-                    "command": "logfocus.addGroup",
+                    "command": "logfocus.addFilter",
                     "when": "view == filters",
                     "group": "navigation@1"
                 },
                 {
-                    "command": "logfocus.turnOnFocusMode",
+                    "command": "logfocus.addGroup",
                     "when": "view == filters",
                     "group": "navigation@2"
+                },
+                {
+                    "command": "logfocus.turnOnFocusMode",
+                    "when": "view == filters",
+                    "group": "navigation@4"
                 },
                 {
                     "command": "logfocus.addProject",

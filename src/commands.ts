@@ -5,10 +5,11 @@ import {
     Project,
     Group,
     createProject,
-    LARGE_FILE_CONFIG,
     createGroup,
+    buildCombinedRegex,
+    performCombinedAnalysis,
 } from "./utils";
-import { Filter, EditorInfo } from "./filter";
+import { Filter, EditorInfo, FilterMode, FocusAction } from "./filter";
 import { FocusProvider } from "./focusProvider";
 
 // ============================================================================
@@ -35,18 +36,82 @@ export function updateFilterTreeView(state: State) {
     if (!project) {
         return;
     }
-    const groups = project.groups.values() || null;
-    if (!groups) {
-        return;
-    }
-    state.filterTreeViewProvider.update(Array.from(groups));
+    state.filterTreeViewProvider.update(project);
 }
 
 /**
- * Update Focus Provider
- * Responsibility: Bind FocusProvider to current project
- * Call when: Project switched
+ * Apply filter highlights using optimized combined regex approach - O(m) time complexity
  */
+async function applyFilterHighlights(
+    state: State,
+    editors: readonly EditorInfo[]
+): Promise<void> {
+    if (!state.selectedProject || !state.selectedProject.filteringEnabled) {
+        return;
+    }
+
+    const filters = Array.from(state.selectedProject.filters.values())
+        .filter(f => f.focusAction !== FocusAction.NONE);
+
+    if (filters.length === 0) {
+        return;
+    }
+
+    // Hoist regex building outside the editor loop
+    const { regex: combinedRegex, filterMap } = buildCombinedRegex(filters);
+
+    // Process each visible editor
+    for (const editorInfo of editors) {
+        const document = editorInfo.editor.document;
+        const text = document.getText();
+        const { filterResults, linePriorityWinners } = performCombinedAnalysis(text, combinedRegex, filterMap);
+
+        const uriString = document.uri.toString();
+        
+        // Cache results ONLY for non-focus documents
+        // Focus documents have shifting line numbers, we don't cache them
+        if (!editorInfo.metaData.isFocusMode) {
+            filterResults.forEach((data, filterId) => {
+                const filter = state.selectedProject!.filters.get(filterId);
+                if (filter) {
+                    filter.updateCache(uriString, Array.from(data.lines));
+                }
+            });
+        }
+
+        // Apply decorations to this editor (works for both normal and focus)
+        filters.forEach(filter => {
+            if (!filter.isHighlighted) {
+                if (filter.decoration) {
+                    editorInfo.editor.setDecorations(filter.decoration, []);
+                }
+                return;
+            }
+
+            // Only highlight lines where THIS filter is the priority winner
+            const ranges: vscode.Range[] = [];
+            filterResults.get(filter.id)?.lines.forEach(lineNum => {
+                if (linePriorityWinners.get(lineNum) === filter.id) {
+                    ranges.push(new vscode.Range(
+                        new vscode.Position(lineNum, 0),
+                        new vscode.Position(lineNum, 0)
+                    ));
+                }
+            });
+            
+            const decoration = filter.decoration;
+            if (decoration) {
+                editorInfo.editor.setDecorations(decoration, ranges);
+            }
+        });
+
+        // If focus mode, also apply the marker
+        if (editorInfo.metaData.isFocusMode) {
+            FocusProvider.applyFocusModeMarker(editorInfo.editor);
+        }
+    }
+}
+
 function updateFocusProvider(state: State) {
     const project = state.selectedProject;
     if (!project) {
@@ -56,32 +121,8 @@ function updateFocusProvider(state: State) {
 }
 
 /**
- * Apply Filter Highlights to Editors
- * Responsibility: Process all visible editors with all filters
- * Call when: Filter properties changed (visibility/highlight/exclude/regex)
- */
-async function applyFilterHighlights(
-    state: State,
-    editors: readonly EditorInfo[]
-): Promise<void> {
-    const filters = state.selectedProject?.filters;
-    if (!filters || filters.size === 0) {
-        return;
-    }
-
-    const promises: Promise<void>[] = [];
-    editors.forEach((editor) => {
-        filters.forEach((filter) => {
-            promises.push(filter.processEditor(editor));
-        });
-    });
-    await Promise.all(promises);
-}
-
-/**
  * Refresh Focus Mode Editors
  * Responsibility: Regenerate content for all visible focus mode editors
- * Call when: Filter cache updated (after applyFilterHighlights)
  */
 function refreshFocusModeEditors(state: State, editors: readonly EditorInfo[]) {
     editors.forEach(({editor, metaData}) => {
@@ -89,77 +130,6 @@ function refreshFocusModeEditors(state: State, editors: readonly EditorInfo[]) {
             state.focusProvider.refresh(editor);
         }
     });
-}
-
-/**
- * Apply Decorations to Focus Mode Editor
- * Responsibility: Apply filter decorations to focus mode document
- * Call when: Focus mode content has been refreshed
- */
-function applyFocusModeDecorations(state: State, focusEditor: vscode.TextEditor): void {
-    // 1. Apply focus mode marker (identity decoration)
-    FocusProvider.applyFocusModeMarker(focusEditor);
-
-    // 2. Apply filter decorations
-    const originalUri = FocusProvider.getOriginalUri(focusEditor.document.uri);
-    if (!originalUri) {
-        return;
-    }
-
-    const filters = state.selectedProject?.filters;
-    if (!filters) {
-        return;
-    } 
-
-    vscode.workspace.openTextDocument(originalUri).then(originalDoc => {
-        // Get visible lines in focus document
-        const visibleLines = state.focusProvider.getVisibleLines(
-            originalUri.toString(), 
-            originalDoc
-        );
-
-        // Apply each filter's decoration
-        filters.forEach(filter => {
-            // Only apply decoration if filter is highlighted and not exclude
-            if (!filter.decoration || !filter.isHighlighted || filter.isExclude) {
-                return;
-            }
-
-            const matchedLines = filter.getMatchedLineNumbers(originalUri.toString());
-            const focusRanges = buildFocusDecorationRanges(matchedLines, visibleLines);
-            
-            focusEditor.setDecorations(filter.decoration, focusRanges);
-        });
-    });
-}
-
-/**
- * Build decoration ranges for focus document
- * @param matchedLines - Line numbers in original document
- * @param visibleLines - Sorted line numbers visible in focus document
- */
-function buildFocusDecorationRanges(
-    matchedLines: number[],
-    visibleLines: number[]
-): vscode.Range[] {
-    const ranges: vscode.Range[] = [];
-    
-    matchedLines.forEach(originalLineNum => {
-        // Find the position of this original line in focus document
-        const focusLineIndex = visibleLines.indexOf(originalLineNum);
-        if (focusLineIndex !== -1) {
-            // Focus document line 0 is empty, so actual line number is index + 1
-            const focusLineNum = focusLineIndex + 1;
-            ranges.push(
-                new vscode.Range(
-                    new vscode.Position(focusLineNum, 0),
-                    new vscode.Position(focusLineNum, 0)
-                )
-            );
-        }
-    });
-
-    return ranges;
 }
 
 /**
@@ -177,67 +147,32 @@ export function refreshEditors(state: State) {
     }
 
     const visibleEditors = vscode.window.visibleTextEditors;
-    const activatedEditor = vscode.window.activeTextEditor;
     const editorInfos: EditorInfo[] = visibleEditors.map(editor => ({
         editor,
-        uri: editor.document.uri,
         metaData: {
-            lineCount: editor.document.lineCount,
-            isLargeFile: editor.document.getText().length > LARGE_FILE_CONFIG.SIZE_THRESHOLD,
             isFocusMode: FocusProvider.isFocusUri(editor.document.uri),
-            isSelected: activatedEditor ? editor.document.uri.toString() === activatedEditor.document.uri.toString() : false,
         }
     }));
 
     void applyFilterHighlights(state, editorInfos).then(() => {
-        // Refresh focus mode content
+        // Refresh focus mode content (triggers provideTextDocumentContent)
         refreshFocusModeEditors(state, editorInfos);
         
-        // Apply decorations to focus mode editors after content is updated
-        // Use setTimeout to ensure content has been refreshed
-        setTimeout(() => {
-            editorInfos.forEach(({editor, metaData}) => {
-                if (metaData.isFocusMode) {
-                    applyFocusModeDecorations(state, editor);
-                }
-            });
-        }, 10);
-        
-        // Update tree view after cache is updated (count values may have changed)
+        // Update tree view
         updateFilterTreeView(state);
+        
+        // Re-apply highlights to focus mode editors after delay
+        // This ensures they are highlighted relative to their NEW filtered content
+        setTimeout(() => {
+            const focusEditors = editorInfos.filter(info => info.metaData.isFocusMode);
+            if (focusEditors.length > 0) {
+                applyFilterHighlights(state, focusEditors);
+            }
+        }, 200);
     });
 }
 
-//set bool for whether the lines matched the given filter will be kept for focus mode
-export function setVisibility(
-    isShown: boolean,
-    treeItem: vscode.TreeItem,
-    state: State
-) {
-    const id = treeItem.id!;
-    
-    // Check if it's a group operation
-    if (id.startsWith('group-')) {
-        const group = state.selectedProject?.groups.get(id);
-        if (group) {
-            group.isShown = isShown;
-            group.filters.forEach((filter) => {
-                filter.isShown = isShown;
-            });
-        }
-    } 
-    // Check if it's a filter operation
-    else if (id.startsWith('filter-')) {
-        const filter = state.selectedProject?.filters.get(id);
-        if (filter) {
-            filter.isShown = isShown;
-        }
-    }
-
-    // Update: Filter properties changed → refresh editors (tree view auto-updated)
-    refreshEditors(state);
-}
-
+//set highlight for matched lines
 export function setHighlight(
     isHighlighted: boolean,
     treeItem: vscode.TreeItem,
@@ -265,33 +200,35 @@ export function setHighlight(
 
     // Update: Filter properties changed → refresh editors (tree view auto-updated)
     refreshEditors(state);
+    saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
 }
 
-export function setExclude(
-    isExclude: boolean,
-    treeItem: vscode.TreeItem,
-    state: State
-) {
-    const id = treeItem.id!;
-
-    const filter = state.selectedProject?.filters.get(id);
-    if (!filter) {
+/**
+ * Toggle the global filtering mode for the current project
+ */
+export function toggleFilteringMode(state: State): void {
+    if (!state.selectedProject) {
         return;
     }
-    filter.isExclude = isExclude;
 
-    // Update: Filter properties changed → refresh editors (tree view auto-updated)
+    state.selectedProject.filteringEnabled = !state.selectedProject.filteringEnabled;
+    
+    vscode.window.showInformationMessage(
+        `Filtering mode: ${state.selectedProject.filteringEnabled ? 'ON' : 'OFF'}`
+    );
+
+    saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
     refreshEditors(state);
 }
 
 //turn on focus mode for the active editor. Will create a new tab if not already for the virtual document
 export function turnOnFocusMode() {
-    let editor = vscode.window.activeTextEditor;
+    const editor = vscode.window.activeTextEditor;
     if (!editor) {
         return;
     }
 
-    let originalUri = editor.document.uri;
+    const originalUri = editor.document.uri;
     if (FocusProvider.isFocusUri(originalUri)) {
         //avoid creating nested focus mode documents
         vscode.window.showInformationMessage(
@@ -301,7 +238,7 @@ export function turnOnFocusMode() {
     }
 
     //set special schema
-    let virtualUri = FocusProvider.virtualUri(originalUri);
+    const virtualUri = FocusProvider.virtualUri(originalUri);
     vscode.workspace
         .openTextDocument(virtualUri)
         .then((doc) => vscode.window.showTextDocument(doc));
@@ -310,6 +247,35 @@ export function turnOnFocusMode() {
 /**
  * Filter related commands
  */
+export function setFocusAction(
+    action: FocusAction,
+    treeItem: vscode.TreeItem,
+    state: State
+) {
+    const id = treeItem.id!;
+
+    // Check if it's a group operation
+    if (id.startsWith('group-')) {
+        const group = state.selectedProject?.groups.get(id);
+        if (group) {
+            group.focusAction = action;
+            group.filters.forEach((filter) => {
+                filter.focusAction = action;
+            });
+        }
+    } 
+    // Check if it's a filter operation
+    else if (id.startsWith('filter-')) {
+        const filter = state.selectedProject?.filters.get(id);
+        if (filter) {
+            filter.focusAction = action;
+        }
+    }
+
+    refreshEditors(state);
+    saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
+}
+
 export function deleteFilter(treeItem: vscode.TreeItem, state: State) {
     const filter = state.selectedProject?.filters.get(treeItem.id!);
     if (!filter) {
@@ -328,57 +294,118 @@ export function deleteFilter(treeItem: vscode.TreeItem, state: State) {
     saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
 }
 
-export function addFilter(treeItem: vscode.TreeItem, state: State) {
-    vscode.window
-        .showInputBox({
-            prompt: "[FILTER] Type a regex for that filter",
-            ignoreFocusOut: false,
-        })
-        .then((regexStr) => {
-            const group = state.selectedProject?.groups.get(treeItem.id!);
-            if (!regexStr || !group) {
-                return;
-            }
+export async function addFilter(treeItem: vscode.TreeItem | undefined, state: State) {
+    if (!state.selectedProject) return;
 
-            const filter = new Filter(new RegExp(regexStr));
-            group!.filters.set(filter.id, filter);
-            state.selectedProject?.filters.set(filter.id, filter); // for fast lookup
-            
-            // Update: Filter added → refresh editors (tree view auto-updated)
-            refreshEditors(state);
-            saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
-        });
+    // 1. Choose Mode
+    const modePick = await vscode.window.showQuickPick(
+        [
+            { label: "Regex", description: "Match using Regular Expressions", value: FilterMode.REGEX },
+            { label: "Text", description: "Match using Plain Text (case-sensitive)", value: FilterMode.TEXT }
+        ],
+        { title: "Select Filter Mode" }
+    );
+
+    if (!modePick) return;
+
+    // 2. Input Pattern
+    const pattern = await vscode.window.showInputBox({
+        prompt: modePick.value === FilterMode.REGEX 
+            ? "[FILTER] Type a regex pattern" 
+            : "[FILTER] Type a plain text pattern",
+        ignoreFocusOut: false,
+    });
+
+    if (!pattern) return;
+
+    try {
+        let regex: RegExp;
+        let textPattern = "";
+
+        if (modePick.value === FilterMode.REGEX) {
+            regex = new RegExp(pattern);
+        } else {
+            // In TEXT mode, we use a regex that escapes all special characters
+            const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            regex = new RegExp(escaped);
+            textPattern = pattern;
+        }
+
+        const filter = new Filter(regex);
+        filter.mode = modePick.value;
+        filter.textPattern = textPattern;
+        
+        // If treeItem is a group, add to group. Otherwise, it's top-level
+        if (treeItem && state.selectedProject.groups.has(treeItem.id!)) {
+            const group = state.selectedProject.groups.get(treeItem.id!);
+            if (group) {
+                filter.groupId = group.id;
+                group.filters.set(filter.id, filter);
+            }
+        }
+        
+        state.selectedProject.filters.set(filter.id, filter); 
+        
+        // Update: Filter added → refresh editors (tree view auto-updated)
+        refreshEditors(state);
+        saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
+    } catch (e) {
+        vscode.window.showErrorMessage(`Invalid Pattern: ${e}`);
+    }
 }
 
-export function editFilter(treeItem: vscode.TreeItem, state: State) {
+export async function editFilter(treeItem: vscode.TreeItem, state: State) {
     const filter = state.selectedProject?.filters.get(treeItem.id!);
     if (!filter) {
         return;
     }
 
-    vscode.window
-        .showInputBox({
-            prompt: "[FILTER] Type a new regex",
-            ignoreFocusOut: false,
-            value: filter.regex.source, // Pre-fill with the current regex
-        })
-        .then((regexStr) => {
-            if ( regexStr === undefined || regexStr === filter.regex.source ) {
-                return;
-            }
+    // 1. Choose Mode
+    const modePick = await vscode.window.showQuickPick(
+        [
+            { label: "Regex", description: "Match using Regular Expressions", value: FilterMode.REGEX },
+            { label: "Text", description: "Match using Plain Text (case-sensitive)", value: FilterMode.TEXT }
+        ],
+        { 
+            title: "Edit Filter Mode",
+            placeHolder: `Current: ${filter.mode === FilterMode.REGEX ? "Regex" : "Text"}`
+        }
+    );
 
-            try {
-                // Update the filter's regex using new method that handles cache invalidation
-                filter.setRegex(new RegExp(regexStr));
-                
-                // Update: Filter regex changed → refresh editors (tree view auto-updated)
-                refreshEditors(state);
-                saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
-            } catch (e) {
-                // Show an error message if the new regex is invalid
-                vscode.window.showErrorMessage(`Invalid Regex: ${e}`);
-            }
-        });
+    if (!modePick) return;
+
+    // 2. Input Pattern
+    const pattern = await vscode.window.showInputBox({
+        prompt: modePick.value === FilterMode.REGEX 
+            ? "[FILTER] Edit regex pattern" 
+            : "[FILTER] Edit plain text pattern",
+        ignoreFocusOut: false,
+        value: modePick.value === FilterMode.TEXT && filter.textPattern ? filter.textPattern : filter.regex.source,
+    });
+
+    if (pattern === undefined) return;
+
+    try {
+        let regex: RegExp;
+        let textPattern = "";
+
+        if (modePick.value === FilterMode.REGEX) {
+            regex = new RegExp(pattern);
+        } else {
+            const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            regex = new RegExp(escaped);
+            textPattern = pattern;
+        }
+
+        filter.mode = modePick.value;
+        filter.textPattern = textPattern;
+        filter.setRegex(regex);
+        
+        refreshEditors(state);
+        saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
+    } catch (e) {
+        vscode.window.showErrorMessage(`Invalid Pattern: ${e}`);
+    }
 }
 
 /**
@@ -653,7 +680,8 @@ export async function exportProject(state: State, projectItem: any) {
         const projectFile = getProjectFilePath(state.globalStorageUri, projectFileName(project));
         
         // Read the existing project file and copy to export location
-        const content = await vscode.workspace.fs.readFile(vscode.Uri.file(projectFile));
+        const fileUri = projectFile.startsWith('file://') ? vscode.Uri.parse(projectFile) : vscode.Uri.file(projectFile);
+        const content = await vscode.workspace.fs.readFile(fileUri);
         await vscode.workspace.fs.writeFile(uri, content);
         
         vscode.window.showInformationMessage(`Project "${project.name}" exported successfully.`);
@@ -696,9 +724,9 @@ export async function importProject(state: State) {
         }
 
         // Save to temporary file in projects directory and use loadProject
-        const { getProjectFilePath, loadProject } = require('./settings');
-        const tempFileName = `${projectName}.json`;
-        const tempFilePath = getProjectFilePath(state.globalStorageUri, tempFileName);
+        const { getSaveProjectFilePath, loadProject, projectFileName } = require('./settings');
+        const tempFileName = projectFileName({ name: projectName } as Project);
+        const tempFilePath = getSaveProjectFilePath(state.globalStorageUri, tempFileName, projectName);
         
         // Write the content with potentially renamed project
         const updatedData = { ...data, name: projectName };
@@ -708,7 +736,7 @@ export async function importProject(state: State) {
         );
         
         // Load using existing loadProject function
-        const newProject = loadProject(state.globalStorageUri, tempFileName);
+        const newProject = loadProject(tempFilePath);
         
         if (!newProject) {
             vscode.window.showErrorMessage("Failed to load imported project.");

@@ -5,7 +5,7 @@ import {
     editFilter,
     refreshEditors,
     setHighlight,
-    setVisibility,
+    setFocusAction,
     turnOnFocusMode,
     addGroup,
     editGroup,
@@ -15,64 +15,18 @@ import {
     deleteProject,
     refreshSettings,
     selectProject,
-    setExclude,
     exportProject,
     importProject,
-    updateFilterTreeView
+    updateFilterTreeView,
+    toggleFilteringMode,
 } from "./commands";
 import { createState, State } from "./utils";
-import { openSettings } from "./settings";
-import { EditorCacheEntry } from "./filter";
+import { openSettings, saveSettings } from "./settings";
 import { FocusProvider } from "./focusProvider";
+import { FocusAction } from "./filter";
 
 // Simple debounce with setTimeout
 let refreshTimeout: NodeJS.Timeout | null = null;
-
-function logFiltersAndCache(state: State) {
-    const output = state.outputChannel;
-    output.clear();
-    output.appendLine("=".repeat(80));
-    output.appendLine("LogFocus - Filter and Cache Status");
-    output.appendLine("=".repeat(80));
-    output.appendLine(`Timestamp: ${new Date().toISOString()}`);
-    output.appendLine("");
-
-    if (!state.selectedProject) {
-        output.appendLine("No project selected");
-        return;
-    }
-
-    output.appendLine(`Project: ${state.selectedProject.name}`);
-    output.appendLine(`Total Groups: ${state.selectedProject.groups.size}`);
-    output.appendLine(`Total Filters: ${state.selectedProject.filters.size}`);
-    output.appendLine("");
-
-    // Iterate through groups and filters
-    state.selectedProject.groups.forEach((group, groupId) => {
-        output.appendLine(`┌─ Group: ${group.name} (${group.filters.size} filters)`);
-        
-        group.filters.forEach((filter, filterId) => {
-            const cacheStats = filter.getCacheStats();
-            output.appendLine(`│  ├─ Filter: ${filter.regex.source.substring(0, 50)}${filter.regex.source.length > 50 ? '...' : ''}`);
-            output.appendLine(`│  │  ├─ Color: ${filter.color}`);
-            output.appendLine(`│  │  ├─ Highlighted: ${filter.isHighlighted}`);
-            output.appendLine(`│  │  ├─ Shown: ${filter.isShown}`);
-            output.appendLine(`│  │  ├─ Exclude: ${filter.isExclude}`);
-            output.appendLine(`│  │  ├─ Count: ${filter.count}`);
-            output.appendLine(`│  │  └─ Cache: ${cacheStats.cachedFiles} file(s)`);
-            
-            if (cacheStats.cachedFiles > 0) {
-                cacheStats.cacheEntries.forEach((entry: EditorCacheEntry, uri: string) => {
-                    const fileName = uri.split('/').pop() || uri;
-                    output.appendLine(`│  │     └─ ${fileName}: ${entry.count} matches`);
-                });
-            }
-        });
-        output.appendLine("│");
-    });
-
-    output.appendLine("=".repeat(80));
-}
 
 export function activate(context: vscode.ExtensionContext) {
     // Create output channel for LogFocus
@@ -81,9 +35,6 @@ export function activate(context: vscode.ExtensionContext) {
     
     const state: State = createState(context.globalStorageUri, outputChannel);
     refreshSettings(state);
-
-    // Log initial state
-    logFiltersAndCache(state);
 
     //tell vs code to open focus:... uris with state.focusProvider
     const disposableFocus = vscode.workspace.registerTextDocumentContentProvider(
@@ -95,9 +46,19 @@ export function activate(context: vscode.ExtensionContext) {
     //to the file explorer according to package.json's contributes>views>explorer
     const view = vscode.window.createTreeView(
         "filters",
-        { treeDataProvider: state.filterTreeViewProvider, showCollapseAll: true }
+        { 
+            treeDataProvider: state.filterTreeViewProvider, 
+            showCollapseAll: true,
+            dragAndDropController: state.filterTreeViewProvider
+        }
     );
     context.subscriptions.push(view);
+
+    // Refresh editors when filter tree changes (e.g. after drop)
+    state.filterTreeViewProvider.onDataChange = () => {
+        refreshEditors(state);
+        saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
+    };
 
     // Simple title updater function that view can use directly
     const updateTitle = () => {
@@ -113,7 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
         state.projectTreeViewProvider);
 
     // 1. Visible editors change - refresh editors
-    var disposableOnDidChangeVisibleTextEditors =
+    const disposableOnDidChangeVisibleTextEditors =
         vscode.window.onDidChangeVisibleTextEditors(() => refreshEditors(state));
     context.subscriptions.push(disposableOnDidChangeVisibleTextEditors);
 
@@ -121,7 +82,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Simple debounced refresh using setTimeout
     const DEBOUNCE_DELAY = 500; // 500ms debounce delay
 
-    var disposableOnDidChangeTextDocument =
+    const disposableOnDidChangeTextDocument =
         vscode.workspace.onDidChangeTextDocument((event) => {
             if (FocusProvider.isFocusUri(event.document.uri)) {
                 return; // Ignore changes to focus documents
@@ -133,7 +94,6 @@ export function activate(context: vscode.ExtensionContext) {
             
             // Set new timeout
             refreshTimeout = setTimeout(() => {
-                console.log("Document changed, refreshing editors...");
                 refreshEditors(state);
                 refreshTimeout = null;
             }, DEBOUNCE_DELAY);
@@ -141,34 +101,34 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(disposableOnDidChangeTextDocument);
 
     // 3. Active editor change - update filter tree view
-    var disposableOnDidChangeActiveTextEditor =
+    const disposableOnDidChangeActiveTextEditor =
         vscode.window.onDidChangeActiveTextEditor(() => updateFilterTreeView(state));
     context.subscriptions.push(disposableOnDidChangeActiveTextEditor);
 
     //register commands
-    let disposableAddProject = vscode.commands.registerCommand(
+    const disposableAddProject = vscode.commands.registerCommand(
         "logfocus.addProject",
         () => addProject(state));
     context.subscriptions.push(disposableAddProject);
 
-    let disposibleEditProject = vscode.commands.registerCommand(
+    const disposableEditProject = vscode.commands.registerCommand(
         "logfocus.editProject",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in Log Analysis Projects');
+                vscode.window.showErrorMessage('This command is executed with button in Log Analysis Projects');
                 return;
             }
             editProject(treeItem, state);
             updateTitle();
         }
     );
-    context.subscriptions.push(disposibleEditProject);
+    context.subscriptions.push(disposableEditProject);
 
-    let disposableDeleteProject = vscode.commands.registerCommand(
+    const disposableDeleteProject = vscode.commands.registerCommand(
         "logfocus.deleteProject",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in Log Analysis Projects');
+                vscode.window.showErrorMessage('This command is executed with button in Log Analysis Projects');
                 return;
             }
             deleteProject(treeItem, state);
@@ -176,12 +136,12 @@ export function activate(context: vscode.ExtensionContext) {
         });
     context.subscriptions.push(disposableDeleteProject);
 
-    let disposableOpenSettings = vscode.commands.registerCommand(
+    const disposableOpenSettings = vscode.commands.registerCommand(
         "logfocus.openSettings",
         () => openSettings(state.globalStorageUri));
     context.subscriptions.push(disposableOpenSettings);
 
-    let disposableRefreshSettings = vscode.commands.registerCommand(
+    const disposableRefreshSettings = vscode.commands.registerCommand(
         "logfocus.refreshSettings",
         () => {
             refreshSettings(state);
@@ -189,11 +149,11 @@ export function activate(context: vscode.ExtensionContext) {
         });
     context.subscriptions.push(disposableRefreshSettings);
 
-    let disposableSelectProject = vscode.commands.registerCommand(
+    const disposableSelectProject = vscode.commands.registerCommand(
         "logfocus.selectProject",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in Log Analysis+ Projects');
+                vscode.window.showErrorMessage('This command is executed with button in Log Analysis Projects');
                 return;
             }
             if (selectProject(treeItem, state)) {
@@ -203,67 +163,75 @@ export function activate(context: vscode.ExtensionContext) {
         });
     context.subscriptions.push(disposableSelectProject);
 
-    let disposableExportProject = vscode.commands.registerCommand(
+    const disposableSetFocusIncluded = vscode.commands.registerCommand(
+        "logfocus.setFocusIncluded",
+        (treeItem: vscode.TreeItem) => {
+            if (treeItem === undefined) {
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
+                return;
+            }
+            setFocusAction(FocusAction.INCLUDED, treeItem, state);
+        }
+    );
+    context.subscriptions.push(disposableSetFocusIncluded);
+
+    const disposableSetFocusExcluded = vscode.commands.registerCommand(
+        "logfocus.setFocusExcluded",
+        (treeItem: vscode.TreeItem) => {
+            if (treeItem === undefined) {
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
+                return;
+            }
+            setFocusAction(FocusAction.EXCLUDED, treeItem, state);
+        }
+    );
+    context.subscriptions.push(disposableSetFocusExcluded);
+
+    const disposableSetFocusNone = vscode.commands.registerCommand(
+        "logfocus.setFocusNone",
+        (treeItem: vscode.TreeItem) => {
+            if (treeItem === undefined) {
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
+                return;
+            }
+            setFocusAction(FocusAction.NONE, treeItem, state);
+        }
+    );
+    context.subscriptions.push(disposableSetFocusNone);
+
+    const disposableExportProject = vscode.commands.registerCommand(
         "logfocus.exportProject",
         (treeItem: vscode.TreeItem) => {
             exportProject(state, treeItem);
         });
     context.subscriptions.push(disposableExportProject);
 
-    let disposableImportProject = vscode.commands.registerCommand(
+    const disposableImportProject = vscode.commands.registerCommand(
         "logfocus.importProject",
         () => {
             importProject(state);
         });
     context.subscriptions.push(disposableImportProject);
 
-    let disposableEnableVisibility = vscode.commands.registerCommand(
-        "logfocus.enableVisibility",
-        (treeItem: vscode.TreeItem) => {
-            if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
-                return;
-            }
-            setVisibility(true, treeItem, state);
-        }
-    );
-    context.subscriptions.push(disposableEnableVisibility);
-
-    let disposableDisableVisibility = vscode.commands.registerCommand(
-        "logfocus.disableVisibility",
-        (treeItem: vscode.TreeItem) => {
-            if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
-                return;
-            }
-            setVisibility(false, treeItem, state);
-        }
-    );
-    context.subscriptions.push(disposableDisableVisibility);
-
-    let disposableTurnOnFocusMode = vscode.commands.registerCommand(
+    const disposableTurnOnFocusMode = vscode.commands.registerCommand(
         "logfocus.turnOnFocusMode",
         () => turnOnFocusMode()
     );
     context.subscriptions.push(disposableTurnOnFocusMode);
 
-    let disposibleAddFilter = vscode.commands.registerCommand(
+    const disposibleAddFilter = vscode.commands.registerCommand(
         "logfocus.addFilter",
-        (treeItem: vscode.TreeItem) => {
-            if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
-                return;
-            }
+        (treeItem: vscode.TreeItem | undefined) => {
             addFilter(treeItem, state);
         }
     );
     context.subscriptions.push(disposibleAddFilter);
 
-    let disposibleEditFilter = vscode.commands.registerCommand(
+    const disposibleEditFilter = vscode.commands.registerCommand(
         "logfocus.editFilter",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
             editFilter(treeItem, state);
@@ -271,11 +239,11 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleEditFilter);
 
-    let disposibleDeleteFilter = vscode.commands.registerCommand(
+    const disposibleDeleteFilter = vscode.commands.registerCommand(
         "logfocus.deleteFilter",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
             deleteFilter(treeItem, state);
@@ -283,11 +251,11 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleDeleteFilter);
 
-    let disposibleEnableHighlight = vscode.commands.registerCommand(
+    const disposibleEnableHighlight = vscode.commands.registerCommand(
         "logfocus.enableHighlight",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
             setHighlight(true, treeItem, state);
@@ -295,11 +263,11 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleEnableHighlight);
 
-    let disposibleDisableHighlight = vscode.commands.registerCommand(
+    const disposibleDisableHighlight = vscode.commands.registerCommand(
         "logfocus.disableHighlight",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
             setHighlight(false, treeItem, state);
@@ -307,17 +275,17 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleDisableHighlight);
 
-    let disposibleAddGroup = vscode.commands.registerCommand(
+    const disposibleAddGroup = vscode.commands.registerCommand(
         "logfocus.addGroup",
         () => addGroup(state)
     );
     context.subscriptions.push(disposibleAddGroup);
 
-    let disposibleEditGroup = vscode.commands.registerCommand(
+    const disposibleEditGroup = vscode.commands.registerCommand(
         "logfocus.editGroup",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
             editGroup(treeItem, state);
@@ -325,35 +293,11 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleEditGroup);
 
-    let disposableEnableExclude = vscode.commands.registerCommand(
-        "logfocus.enableExclude",
-        (treeItem: vscode.TreeItem) => {
-            if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
-                return;
-            }
-            setExclude(true, treeItem, state);
-        }
-    );
-    context.subscriptions.push(disposableEnableExclude);
-
-    let disposableDisableExclude = vscode.commands.registerCommand(
-        "logfocus.disableExclude",
-        (treeItem: vscode.TreeItem) => {
-            if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
-                return;
-            }
-            setExclude(false, treeItem, state);
-        }
-    );
-    context.subscriptions.push(disposableDisableExclude);
-
-    let disposibleDeleteGroup = vscode.commands.registerCommand(
+    const disposibleDeleteGroup = vscode.commands.registerCommand(
         "logfocus.deleteGroup",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is excuted with button in FILTERS');
+                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
             deleteGroup(treeItem, state);
@@ -361,14 +305,13 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleDeleteGroup);
 
-    let disposableShowFilterStats = vscode.commands.registerCommand(
-        "logfocus.showFilterStats",
+    const disposableToggleFiltering = vscode.commands.registerCommand(
+        "logfocus.toggleFiltering",
         () => {
-            logFiltersAndCache(state);
-            state.outputChannel.show();
+            toggleFilteringMode(state);
         }
     );
-    context.subscriptions.push(disposableShowFilterStats);
+    context.subscriptions.push(disposableToggleFiltering);
 }
 
 // this method is called when your extension is deactivated
