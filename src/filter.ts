@@ -1,73 +1,62 @@
 import * as vscode from "vscode";
-import * as crypto from "crypto";
 import { generateId } from "./utils";
-import { FocusProvider } from "./focusProvider";
 
 // Keep track of the last generated hue to avoid similar colors
 let lastHue = 0;
 
 /**
- * Editor Info
+ * Action to take in focus mode
  */
-export type EditorMetaData = {
-    lineCount: number;
-    isLargeFile: boolean;
-    isFocusMode: boolean;
-    isSelected: boolean;
-};
-
-export type EditorInfo = {
-    editor: vscode.TextEditor;
-    uri: vscode.Uri;
-    metaData: EditorMetaData;
-};
-
-/**
- * Cache entry for storing editor analysis results
- */
-export interface EditorCacheEntry {
-    uri: string;                    // Editor URI
-    version: number;               // Document version
-    size: number;                  // Document size in bytes
-    contentHash: string;           // Content hash for change detection
-    lastModified: number;          // Last modified timestamp
-    
-    // Cached results
-    matchedRanges: vscode.Range[]; // Matched ranges for highlighting
-    matchedLineNumbers: number[];  // Line numbers that match
-    count: number;                 // Total match count
-    
-    lastAnalyzed: number;          // When this cache was created
+export enum FocusAction {
+    INCLUDED = "included", // Match = Show
+    EXCLUDED = "excluded", // Match = Hide
+    NONE = "none"          // Match = No effect on focus mode
 }
 
 /**
- * Represents a log filter with regex pattern matching and visual styling
- * Self-contained filter that manages its own decoration and processing with intelligent caching
+ * Filter mode: text or regex
+ */
+export enum FilterMode {
+    TEXT = "text",
+    REGEX = "regex"
+}
+
+/**
+ * Types for backward compatibility with commands.ts and extension.ts
+ */
+export interface EditorCacheEntry {
+    timestamp: number;
+    matchedLines: number[];
+}
+
+export interface EditorInfo {
+    editor: import('vscode').TextEditor;
+    metaData: {
+        isFocusMode: boolean;
+    };
+}
+
+/**
+ * Represents a log filter with pattern matching and visual styling
  */
 export class Filter {
-    public regex: RegExp;  // Made mutable for editing functionality
+    public regex: RegExp;
+    public mode: FilterMode = FilterMode.REGEX;
+    public textPattern: string = "";
+    public groupId?: string;
     public readonly id: string;
     
     private _color: string;
     private _excludeColor: string;
     private _isHighlighted: boolean;
-    private _isShown: boolean;
-    private _isExclude: boolean;
+    private _focusAction: FocusAction = FocusAction.INCLUDED;
     private _iconPath: vscode.Uri;
-    private _count: number;
-    
-    // Internal decoration management - support multiple editors
+    private _priority: number = 50;
     private _decoration: vscode.TextEditorDecorationType | null = null;
-    private _activeEditors: Map<string, EditorInfo> = new Map(); // Track multiple active editors
-    private _editorDecorations: Map<string, vscode.Range[]> = new Map(); // Store decorations per editor
-    
-    // Cache management
-    private _editorCache: Map<string, EditorCacheEntry> = new Map();
-    private _cacheMaxSize: number = 10; // Maximum number of editors to cache
-    private _cacheMaxAge: number = 300000; // 5 minutes cache TTL
-    private _regexVersion: number = 0; // Track regex changes for cache invalidation
+    private _lineCache: Map<string, number[]> = new Map();
+    private _analyzedUris: Set<string> = new Set();
 
-    constructor(regex: RegExp, color?: string) {
+    constructor(regex: RegExp, color?: string, priority: number = 50) {
         this.regex = regex;
         const colors = color ? this.createColorPair(color) : this.generateColorPair();
         this._color = colors.normal;
@@ -75,14 +64,13 @@ export class Filter {
         this.id = generateId("filter");
         
         this._isHighlighted = true;
-        this._isShown = true;
-        this._isExclude = false;
-        this._count = 0;
+        this._focusAction = FocusAction.INCLUDED;
+        this._priority = Math.max(0, Math.min(100, priority));
         this._iconPath = this.generateSvgIcon();
     }
 
     get color(): string {
-        return this.isExclude ? this._excludeColor : this._color;
+        return this._focusAction === FocusAction.EXCLUDED ? this._excludeColor : this._color;
     }
 
     set color(value: string) {
@@ -94,12 +82,11 @@ export class Filter {
     }
 
     /**
-     * Set regex and invalidate cache
+     * Set regex and update decoration
      */
     public setRegex(newRegex: RegExp): void {
         this.regex = newRegex;
-        this._regexVersion++;
-        this.clearCache(); // Invalidate all cache since regex changed
+        this.clearCache();
         this._iconPath = this.generateSvgIcon();
         this.updateDecoration();
     }
@@ -114,21 +101,12 @@ export class Filter {
         this.updateDecoration();
     }
 
-    get isShown(): boolean {
-        return this._isShown;
+    get focusAction(): FocusAction {
+        return this._focusAction;
     }
 
-    set isShown(value: boolean) {
-        this._isShown = value;
-        this.applyDecorationsToAllEditors();
-    }
-
-    get isExclude(): boolean {
-        return this._isExclude;
-    }
-
-    set isExclude(value: boolean) {
-        this._isExclude = value;
+    set focusAction(value: FocusAction) {
+        this._focusAction = value;
         this._iconPath = this.generateSvgIcon();
         this.updateDecoration();
     }
@@ -137,17 +115,59 @@ export class Filter {
         return this._iconPath;
     }
 
+    get priority(): number {
+        return this._priority;
+    }
+
+    set priority(value: number) {
+        this._priority = Math.max(0, Math.min(100, value));
+    }
+
     get count(): number {
         const activeEditor = vscode.window.activeTextEditor;
         if (activeEditor) {
-            var editorUri = activeEditor.document.uri;
-            if (FocusProvider.isFocusUri(editorUri)) {
-                editorUri = FocusProvider.getOriginalUri(editorUri) || editorUri;
-            }
-            const cacheEntry = this._editorCache.get(editorUri.toString());
-            return cacheEntry?.count || 0;
+            const uri = activeEditor.document.uri.toString();
+            return this._lineCache.get(uri)?.length ?? 0;
         }
-        return this._count;
+        // Fallback to the first cache entry if no active editor
+        const firstEntry = this._lineCache.values().next().value;
+        return firstEntry?.length ?? 0;
+    }
+
+    /**
+     * Update the matched lines cache for a specific document
+     */
+    public updateCache(uri: string, matchedLines: number[]): void {
+        this._lineCache.set(uri, matchedLines);
+        this._analyzedUris.add(uri);
+    }
+
+    public isAnalyzed(uri: string): boolean {
+        return this._analyzedUris.has(uri);
+    }
+
+    public clearCache(uri?: string): void {
+        if (uri) {
+            this._lineCache.delete(uri);
+            this._analyzedUris.delete(uri);
+        } else {
+            this._lineCache.clear();
+            this._analyzedUris.clear();
+        }
+    }
+
+    /**
+     * Get matched lines for a specific document
+     */
+    public getMatchedLines(uri: string): number[] {
+        return this._lineCache.get(uri) || [];
+    }
+
+    getCacheStats(): { cachedFiles: number; cacheEntries: Map<string, number[]> } {
+        return { 
+            cachedFiles: this._lineCache.size, 
+            cacheEntries: new Map(this._lineCache) 
+        };
     }
 
     get decoration(): vscode.TextEditorDecorationType | null {
@@ -155,370 +175,22 @@ export class Filter {
     }
 
     /**
-     * Process an editor and apply filter logic with caching
-     * This is the main entry point for applying the filter to an editor
-     * 
-     * Normal mode: Analyzes the document, caches results, and applies decorations
-     * Focus mode: Only ensures the original document cache exists for FocusProvider to use
-     *            (FocusProvider manages focus mode content and decorations, not Filter)
+     * Tests if a line matches this filter's pattern
      */
-    public async processEditor(editorInfo: EditorInfo): Promise<void> {
-        // Focus mode: Only ensure original document has cache for FocusProvider
-        // FocusProvider will use this cache to generate filtered content
-        if (editorInfo.metaData.isFocusMode) {
-            await this.ensureOriginalDocumentCache(editorInfo);
-            return;
+    public test(line: string): boolean {
+        if (this.mode === FilterMode.TEXT) {
+            return line.includes(this.textPattern);
         }
-        
-        // Normal mode: Full processing with decoration
-        if (!this._decoration) {
-            this.createDecoration();
-        }
-        
-        const editorUri = editorInfo.uri.toString();
-        this._activeEditors.set(editorUri, editorInfo);
-        
-        const cacheEntry = await this.getCachedAnalysisOrCompute(editorInfo.editor.document, editorInfo.metaData);
-        this._editorDecorations.set(editorUri, cacheEntry.matchedRanges);
-
-        this.applyDecorationsToEditor(editorInfo, cacheEntry.matchedRanges);
-    }
-
-    /**
-     * Ensure that cache exists for the original document when in focus mode
-     * This is important for newly created filters in focus mode
-     */
-    private async ensureOriginalDocumentCache(editorInfo: EditorInfo): Promise<void> {
-        const originalUri = FocusProvider.getOriginalUri(editorInfo.uri);
-        if (!originalUri) {
-            return;
-        }
-        
-        const originalUriString = originalUri.toString();
-        
-        // Check if cache already exists
-        if (this._editorCache.has(originalUriString)) {
-            return;
-        }
-        
-        try {
-            // Open the original document to analyze it
-            const originalDocument = await vscode.workspace.openTextDocument(originalUri);
-            
-            // Double check if another call already created the cache
-            if (this._editorCache.has(originalUriString)) {
-                return;
-            }
-            
-            // Create a temporary EditorInfo for analysis
-            const originalMetaData: EditorMetaData = {
-                lineCount: originalDocument.lineCount,
-                isLargeFile: originalDocument.lineCount > 5000,
-                isFocusMode: false,
-                isSelected: false
-            };
-            
-            // Use async analysis to avoid blocking
-            const cacheEntry = await this.getCachedAnalysisOrCompute(originalDocument, originalMetaData);
-            console.log(`Focus mode: Cached analysis for original document ${originalUri.toString()} with ${cacheEntry.count} matches.`);
-        } catch (error) {
-            console.error('Failed to analyze original document for focus mode:', error);
-        }
-    }
-
-    /**
-     * Clear processing and decorations
-     */
-    public clearProcessing(editorUri?: string): void {
-        if (editorUri) {
-            const editorInfo = this._activeEditors.get(editorUri);
-            if (this._decoration && editorInfo) {
-                editorInfo.editor.setDecorations(this._decoration, []);
-            }
-            this._activeEditors.delete(editorUri);
-            this._editorDecorations.delete(editorUri);
-        } else {
-            if (this._decoration) {
-                for (const editorInfo of this._activeEditors.values()) {
-                    editorInfo.editor.setDecorations(this._decoration, []);
-                }
-            }
-            this._activeEditors.clear();
-            this._editorDecorations.clear();
-        }
-        this._count = 0;
-    }
-
-    /**
-     * Remove a specific editor from processing
-     */
-    public removeEditor(editorUri: string): void {
-        this.clearProcessing(editorUri);
-        this.clearCache(editorUri);
-    }
-
-    /**
-     * Clear cache for specific editor or all editors
-     */
-    public clearCache(editorUri?: string): void {
-        if (editorUri) {
-            this._editorCache.delete(editorUri);
-        } else {
-            this._editorCache.clear();
-        }
+        return this.regex.test(line);
     }
 
     /**
      * Dispose of this filter's resources
      */
     public dispose(): void {
-        this.clearProcessing();
-        this.clearCache(); // Clear all cache entries
         if (this._decoration) {
             this._decoration.dispose();
             this._decoration = null;
-        }
-    }
-
-    /**
-     * Tests if a line matches this filter's regex pattern
-     */
-    public test(line: string): boolean {
-        return this.regex.test(line);
-    }
-
-    /**
-     * Get line numbers that match this filter (sync version using cache only)
-     */
-    public getMatchedLineNumbers(editorUri?: string): number[] {
-        if (editorUri) {
-            const editorInfo = this._activeEditors.get(editorUri);
-            if (!editorInfo) {return [];}
-            
-            const cacheEntry = this._editorCache.get(editorUri);
-            if (cacheEntry && this.isCacheValid(cacheEntry, editorInfo.editor.document, editorInfo.metaData)) {
-                return cacheEntry.matchedLineNumbers;
-            }
-            
-            // If no valid cache, compute synchronously (fallback)
-            const document = editorInfo.editor.document;
-            const syncEntry = editorInfo.metaData.isLargeFile ? 
-                this.computeOptimizedAnalysis(document) : 
-                this.computeAnalysis(document);
-            return syncEntry.matchedLineNumbers;
-        } else {
-            const allLineNumbers: number[] = [];
-            for (const [uri] of this._activeEditors.entries()) {
-                allLineNumbers.push(...this.getMatchedLineNumbers(uri));
-            }
-            return allLineNumbers;
-        }
-    }
-
-    /**
-     * Get cached analysis or compute new one (async to avoid blocking)
-     */
-    private async getCachedAnalysisOrCompute(document: vscode.TextDocument, metaData: EditorMetaData): Promise<EditorCacheEntry> {
-        const editorUri = document.uri.toString();
-
-        this.cleanupExpiredCache();
-
-        const cachedEntry = this._editorCache.get(editorUri);
-        if (cachedEntry && this.isCacheValid(cachedEntry, document, metaData)) {
-            return cachedEntry;
-        }
-
-        // Compute analysis asynchronously to avoid blocking UI
-        const newEntry = await (metaData.isLargeFile ? 
-            this.computeOptimizedAnalysisAsync(document) : 
-            this.computeAnalysisAsync(document));
-        
-        newEntry.lastAnalyzed = Date.now();
-        
-        this._editorCache.set(editorUri, newEntry);
-        this.enforceMaxCacheSize();
-        
-        return newEntry;
-    }
-
-    /**
-     * Check if cache is still valid
-     */
-    private isCacheValid(cacheEntry: EditorCacheEntry, document: vscode.TextDocument, metaData?: EditorMetaData): boolean {
-        if (cacheEntry.version !== document.version) {return false;}
-        if (cacheEntry.size !== Buffer.byteLength(document.getText(), 'utf8')) {return false;}
-        if (cacheEntry.contentHash !== this.calculateContentHash(document.getText())) {return false;}
-        
-        const maxAge = metaData?.isLargeFile ? this._cacheMaxAge / 2 : this._cacheMaxAge;
-        const cacheAge = Date.now() - cacheEntry.lastAnalyzed;
-        return cacheAge <= maxAge;
-    }
-
-    /**
-     * Compute fresh analysis for a document (async version)
-     */
-    private async computeAnalysisAsync(document: vscode.TextDocument): Promise<EditorCacheEntry> {
-        const text = document.getText();
-        
-        // Yield control to avoid blocking UI for large files
-        await new Promise(resolve => setImmediate(resolve));
-        
-        // Pass text to avoid re-fetching
-        const matchedRanges = this.matchLinesInText(text);
-        const matchedLineNumbers = matchedRanges.map(range => range.start.line);
-        const count = matchedLineNumbers.length;
-        
-        return {
-            uri: document.uri.toString(),
-            version: document.version,
-            size: Buffer.byteLength(text, 'utf8'),
-            contentHash: this.calculateContentHash(text),
-            lastModified: Date.now(),
-            matchedRanges,
-            matchedLineNumbers,
-            count,
-            lastAnalyzed: 0 // Will be set by caller
-        };
-    }
-
-    /**
-     * Optimized analysis for large files (async version) TODO: not sure AI is correct here
-     */
-    private async computeOptimizedAnalysisAsync(document: vscode.TextDocument): Promise<EditorCacheEntry> {
-        const text = document.getText();
-        const maxRanges = 500; // Performance limit
-        
-        // Yield control to avoid blocking UI
-        await new Promise(resolve => setImmediate(resolve));
-        
-        // Pass text to avoid re-fetching
-        const allMatchedRanges = this.matchLinesInText(text);
-        const matchedLineNumbers = allMatchedRanges.map(range => range.start.line);
-        const count = matchedLineNumbers.length;
-        
-        // Limit ranges for performance in large files
-        const matchedRanges = allMatchedRanges.slice(0, maxRanges);
-        
-        return {
-            uri: document.uri.toString(),
-            version: document.version,
-            size: Buffer.byteLength(text, 'utf8'),
-            contentHash: this.calculateContentHash(text),
-            lastModified: Date.now(),
-            matchedRanges,
-            matchedLineNumbers,
-            count,
-            lastAnalyzed: 0
-        };
-    }
-
-    /**
-     * Compute fresh analysis for a document (sync version - kept for compatibility)
-     */
-    private computeAnalysis(document: vscode.TextDocument): EditorCacheEntry {
-        const text = document.getText();
-        
-        // Pass text to avoid re-fetching
-        const matchedRanges = this.matchLinesInText(text);
-        const matchedLineNumbers = matchedRanges.map(range => range.start.line);
-        const count = matchedLineNumbers.length;
-        
-        return {
-            uri: document.uri.toString(),
-            version: document.version,
-            size: Buffer.byteLength(text, 'utf8'),
-            contentHash: this.calculateContentHash(text),
-            lastModified: Date.now(),
-            matchedRanges,
-            matchedLineNumbers,
-            count,
-            lastAnalyzed: 0 // Will be set by caller
-        };
-    }
-
-    /**
-     * Optimized analysis for large files (sync version - kept for compatibility)
-     */
-    private computeOptimizedAnalysis(document: vscode.TextDocument): EditorCacheEntry {
-        const text = document.getText();
-        const maxRanges = 500; // Performance limit
-        
-        // Pass text to avoid re-fetching
-        const allMatchedRanges = this.matchLinesInText(text);
-        const matchedLineNumbers = allMatchedRanges.map(range => range.start.line);
-        const count = matchedLineNumbers.length;
-                
-        // Limit ranges for performance in large files
-        const matchedRanges = allMatchedRanges.slice(0, maxRanges);
-        
-        return {
-            uri: document.uri.toString(),
-            version: document.version,
-            size: Buffer.byteLength(text, 'utf8'),
-            contentHash: this.calculateContentHash(text),
-            lastModified: Date.now(),
-            matchedRanges,
-            matchedLineNumbers,
-            count,
-            lastAnalyzed: 0
-        };
-    }
-
-    /**
-     * Match lines in text and return ranges
-     * Optimized to accept text directly to avoid repeated getText() calls
-     */
-    private matchLinesInText(text: string): vscode.Range[] {
-        const lines = text.split('\n');
-        const matchedRanges: vscode.Range[] = [];
-
-        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-            const line = lines[lineIndex];
-            if (this.test(line)) {
-                // Create range for the entire line (for whole line highlighting)
-                const wholeLineRange = new vscode.Range(
-                    new vscode.Position(lineIndex, 0),
-                    new vscode.Position(lineIndex, 0) // position does not matter because isWholeLine is set to true
-                );
-                matchedRanges.push(wholeLineRange);
-            }
-        }
-
-        return matchedRanges;
-    }
-
-    /**
-     * Calculate content hash for change detection
-     */
-    private calculateContentHash(content: string): string {
-        return crypto.createHash('md5').update(content).digest('hex');
-    }
-
-    /**
-     * Clean up expired cache entries
-     */
-    private cleanupExpiredCache(): void {
-        const now = Date.now();
-        for (const [uri, entry] of this._editorCache.entries()) {
-            if (now - entry.lastAnalyzed > this._cacheMaxAge) {
-                this._editorCache.delete(uri);
-            }
-        }
-    }
-
-    /**
-     * Enforce maximum cache size by removing oldest entries
-     */
-    private enforceMaxCacheSize(): void {
-        if (this._editorCache.size <= this._cacheMaxSize) {return;}
-        
-        // Sort by lastAnalyzed time and remove oldest
-        const entries = Array.from(this._editorCache.entries())
-            .sort(([, a], [, b]) => a.lastAnalyzed - b.lastAnalyzed);
-        
-        const toRemove = entries.slice(0, this._editorCache.size - this._cacheMaxSize);
-        for (const [uri] of toRemove) {
-            this._editorCache.delete(uri);
         }
     }
 
@@ -542,76 +214,40 @@ export class Filter {
             this._decoration.dispose();
         }
         this.createDecoration();
-        this.applyDecorationsToAllEditors();
-    }
-
-    /**
-     * Apply decorations to specific editor (normal mode only)
-     * Focus mode decorations are managed by FocusProvider, not Filter
-     */
-    private applyDecorationsToEditor(editorInfo: EditorInfo, matchedRanges: vscode.Range[]): void {
-        if (!this._decoration) {return;}
-
-        const editor = editorInfo.editor;
-        const isLargeFile = editorInfo.metaData.isLargeFile;
-        
-        const shouldHighlight = this._isHighlighted && 
-                               !this._isExclude &&
-                               (!isLargeFile || (this._isShown && this._count < 1000));
-
-        if (shouldHighlight) {
-            editor.setDecorations(this._decoration, matchedRanges);
-        } else {
-            editor.setDecorations(this._decoration, []);
-        }
-    }
-
-    /**
-     * Apply decorations to all active editors
-     */
-    private applyDecorationsToAllEditors(): void {
-        for (const [uri, editorInfo] of this._activeEditors.entries()) {
-            const decorations = this._editorDecorations.get(uri) || [];
-            this.applyDecorationsToEditor(editorInfo, decorations);
-        }
     }
 
     /**
      * Creates an SVG icon representing the filter state
-     * Returns a filled circle if highlighted, empty circle otherwise
-     * Shows diagonal slash for exclude filters
      */
     private generateSvgIcon(): vscode.Uri {
-        const svgContent = this.createIcon();
+        const color = this._focusAction === FocusAction.EXCLUDED ? this._excludeColor : this._color;
+        const isFilled = this._isHighlighted;
+        
+        const circle = isFilled 
+            ? `<circle fill="${color}" cx="50" cy="50" r="45"/>`
+            : `<circle stroke="${color}" fill="transparent" stroke-width="8" cx="50" cy="50" r="42"/>`;
+        
+        let overlay = '';
+        if (this._focusAction === FocusAction.EXCLUDED) {
+            // X symbol
+            overlay = `<line x1="30" y1="30" x2="70" y2="70" stroke="${isFilled ? 'white' : color}" stroke-width="10" stroke-linecap="round"/>
+                       <line x1="70" y1="30" x2="30" y2="70" stroke="${isFilled ? 'white' : color}" stroke-width="10" stroke-linecap="round"/>`;
+        } else if (this._focusAction === FocusAction.NONE) {
+            // Diagonal line (Ghost mode)
+            overlay = `<line x1="20" y1="80" x2="80" y2="20" stroke="${isFilled ? 'white' : color}" stroke-width="6" stroke-linecap="round" opacity="0.6"/>`;
+        }
+        
+        const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+            ${circle}
+            ${overlay}
+        </svg>`;
+        
         const dataUri = `data:image/svg+xml;base64,${btoa(svgContent)}`;
         return vscode.Uri.parse(dataUri);
     }
 
     /**
-     * Create unified icon based on filter state
-     */
-    private createIcon(): string {
-        const color = this._isExclude ? this._excludeColor : this._color;
-        const isFilled = this._isHighlighted;
-        
-        // Base circle
-        const circle = isFilled 
-            ? `<circle fill="${color}" cx="50" cy="50" r="45"/>`
-            : `<circle stroke="${color}" fill="transparent" stroke-width="8" cx="50" cy="50" r="42"/>`;
-        
-        // Exclude indicator - use diagonal slash for better visibility
-        const excludeSymbol = this._isExclude 
-            ? `<line x1="25" y1="25" x2="75" y2="75" stroke="${isFilled ? 'white' : color}" stroke-width="${isFilled ? '8' : '6'}" stroke-linecap="round"/>`
-            : '';
-        
-        return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-            ${circle}
-            ${excludeSymbol}
-        </svg>`;
-    }
-
-    /**
-     * Generate a random color pair (normal and inverted for exclude filters)
+     * Generate a random color pair
      */
     private generateColorPair(): { normal: string; inverted: string } {
         let newHue;
@@ -620,10 +256,10 @@ export class Filter {
         } while (this.isHueTooSimilar(newHue, lastHue));
         
         lastHue = newHue;
-        const normalColor = `hsl(${newHue}, 50%, 40%)`;
-        const invertedColor = `hsl(${newHue}, 40%, 80%)`;
-        
-        return { normal: normalColor, inverted: invertedColor };
+        return {
+            normal: `hsl(${newHue}, 50%, 40%)`,
+            inverted: `hsl(${newHue}, 40%, 80%)`
+        };
     }
 
     /**
@@ -633,15 +269,12 @@ export class Filter {
         const match = color.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
         if (match) {
             const hue = parseInt(match[1]);
-            const normalColor = `hsl(${hue}, 50%, 40%)`;
-            const invertedColor = `hsl(${hue}, 40%, 80%)`;
-            
             return {
-                normal: normalColor,
-                inverted: invertedColor
+                normal: `hsl(${hue}, 50%, 40%)`,
+                inverted: `hsl(${hue}, 40%, 80%)`
             };
         }
-        return { normal: color, inverted: color }; // Fallback
+        return { normal: color, inverted: color };
     }
 
     private isHueTooSimilar(hue1: number, hue2: number): boolean {
@@ -650,15 +283,5 @@ export class Filter {
             360 - Math.abs(hue1 - hue2)
         );
         return hueDifference < 60;
-    }
-
-    /**
-     * Get cache statistics for this filter
-     */
-    public getCacheStats(): { cachedFiles: number; cacheEntries: Map<string, EditorCacheEntry> } {
-        return {
-            cachedFiles: this._editorCache.size,
-            cacheEntries: this._editorCache
-        };
     }
 }

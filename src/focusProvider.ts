@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
-import { Project } from "./utils";
-import { Filter } from "./filter";
+import { Project, buildCombinedRegex, performCombinedAnalysis } from "./utils";
+import { Filter, FocusAction } from "./filter";
 import * as path from "path";
 
 /**
@@ -57,47 +57,85 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
      * @returns Promise<string> Filtered content as read-only text
      */
     async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-        // Parse the original URI from the query parameter
-        const queryParams = new URLSearchParams(uri.query);
-        const originalUriString = queryParams.get('source');
+        try {
+            const queryParams = new URLSearchParams(uri.query);
+            const originalUriString = queryParams.get('source');
 
-        const uriString = originalUriString ? decodeURIComponent(originalUriString) : uri.path;
-        const originalUri = vscode.Uri.parse(uriString);
-        const sourceDocument = await vscode.workspace.openTextDocument(originalUri);
-        return this.generateFilteredContent(originalUri.toString(), sourceDocument);
+            const inputUriString = originalUriString ? decodeURIComponent(originalUriString) : uri.path;
+            const originalUri = vscode.Uri.parse(inputUriString);
+            const sourceDocument = await vscode.workspace.openTextDocument(originalUri);
+            
+            // Perform optimized analysis if filters haven't been analyzed for this URI
+            const { inclusiveFilters, exclusiveFilters } = this.getActiveFiltersSorted();
+            const allFilters = [...inclusiveFilters, ...exclusiveFilters];
+            const uriString = originalUri.toString();
+            
+            const needsAnalysis = allFilters.some(f => !f.isAnalyzed(uriString));
+            
+            if (needsAnalysis) {
+                await this.performOnDemandAnalysis(sourceDocument);
+            }
+            
+            return this.generateFilteredContent(uriString, sourceDocument);
+        } catch (e) {
+            console.error('[FocusProvider] Error:', e);
+            return `[ERROR] Failed to generate focus content: ${e}`;
+        }
     }
 
     /**
-     * Generate filtered content using cached Filter results for optimal performance
+     * Perform optimized on-demand analysis using combined regex - O(m) time complexity
+     * Fallback to ensure focus mode works even if filters weren't pre-analyzed
+     */
+    private async performOnDemandAnalysis(document: vscode.TextDocument): Promise<void> {
+        const { inclusiveFilters, exclusiveFilters } = this.getActiveFiltersSorted();
+        const allFilters = [...inclusiveFilters, ...exclusiveFilters];
+        
+        if (allFilters.length === 0) {return;}
+        
+        const text = document.getText();
+        const { regex: combinedRegex, filterMap } = buildCombinedRegex(allFilters);
+        const { filterResults } = performCombinedAnalysis(text, combinedRegex, filterMap);
+
+        // Cache results for each filter per URI
+        const uriString = document.uri.toString();
+        filterResults.forEach((data, filterId) => {
+            const filter = allFilters.find(f => f.id === filterId);
+            if (filter) {
+                filter.updateCache(uriString, Array.from(data.lines));
+            }
+        });
+    }
+
+    /**
+     * Generate filtered content using cached results - O(n) time complexity
      */
     private generateFilteredContent(originalUri: string, document: vscode.TextDocument): string {
-        const { positiveFilters, excludeFilters } = this.getActiveFilters();
-        
-        let resultLines: Set<number> = new Set();
+        const { inclusiveFilters, exclusiveFilters } = this.getActiveFiltersSorted();
+        const resultLines: Set<number> = new Set();
 
-        if (positiveFilters.length > 0) {
-            // Collect line numbers from positive filters using their cached results
-            positiveFilters.forEach(filter => {
-                const lineNumbers = filter.getMatchedLineNumbers(originalUri.toString());
-                lineNumbers.forEach(lineNum => {
-                    resultLines.add(lineNum);
-                });
+        if (inclusiveFilters.length > 0) {
+            // Collect line numbers from inclusive filters
+            inclusiveFilters.forEach(filter => {
+                const cachedLines = filter.getMatchedLines(originalUri);
+                cachedLines.forEach((lineNum: number) => resultLines.add(lineNum));
             });
         } else {
-            // Include all lines if no positive filters
+            // Include all lines if no inclusive filters are active
             for (let i = 0; i < document.lineCount; i++) {
                 resultLines.add(i);
             }
-            // Remove excluded lines using cached results
-            excludeFilters.forEach(filter => {
-                const excludedLines = filter.getMatchedLineNumbers(originalUri.toString());
-                excludedLines.forEach(lineNum => resultLines.delete(lineNum));
-            });
         }
 
-        // Convert to sorted array and build result
+        // Always subtract exclusive filters
+        exclusiveFilters.forEach(filter => {
+            const cachedLines = filter.getMatchedLines(originalUri);
+            cachedLines.forEach((lineNum: number) => resultLines.delete(lineNum));
+        });
+
+        // Build result string from sorted line numbers
         const sortedLines = Array.from(resultLines).sort((a, b) => a - b);
-        const resultArr = [""];
+        const resultArr: string[] = [];
         
         sortedLines.forEach(lineNum => {
             if (lineNum < document.lineCount) {
@@ -109,26 +147,28 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
     }
 
     /**
-     * Get currently active positive and exclude filters
+     * Get currently active focus inclusive and exclusive filters, sorted by priority (descending)
      */
-    private getActiveFilters(): { positiveFilters: Filter[], excludeFilters: Filter[] } {
-        const positiveFilters: Filter[] = [];
-        const excludeFilters: Filter[] = [];
-        if (this.project === null) {
-            return { positiveFilters, excludeFilters };
+    private getActiveFiltersSorted(): { inclusiveFilters: Filter[], exclusiveFilters: Filter[] } {
+        const inclusiveFilters: Filter[] = [];
+        const exclusiveFilters: Filter[] = [];
+        
+        if (!this.project) {
+            return { inclusiveFilters, exclusiveFilters };
         }
 
-        this.project.filters.forEach(filter => {
-            if (filter.isShown) {
-                if (filter.isExclude) {
-                    excludeFilters.push(filter);
-                } else {
-                    positiveFilters.push(filter);
+        Array.from(this.project.filters.values())
+            .filter(filter => filter.focusAction !== FocusAction.NONE)
+            .sort((a, b) => (b.priority ?? 50) - (a.priority ?? 50))
+            .forEach(filter => {
+                if (filter.focusAction === FocusAction.EXCLUDED) {
+                    exclusiveFilters.push(filter);
+                } else if (filter.focusAction === FocusAction.INCLUDED) {
+                    inclusiveFilters.push(filter);
                 }
-            }
-        });
+            });
 
-        return { positiveFilters, excludeFilters };
+        return { inclusiveFilters, exclusiveFilters };
     }
 
     /**
@@ -140,26 +180,27 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
      * @returns Sorted array of line numbers visible in focus document
      */
     getVisibleLines(originalUri: string, originalDoc: vscode.TextDocument): number[] {
-        const { positiveFilters, excludeFilters } = this.getActiveFilters();
-        let resultLines: Set<number> = new Set();
+        const { inclusiveFilters, exclusiveFilters } = this.getActiveFiltersSorted();
+        const resultLines: Set<number> = new Set();
 
-        if (positiveFilters.length > 0) {
-            // Collect line numbers from positive filters
-            positiveFilters.forEach(filter => {
-                const lineNumbers = filter.getMatchedLineNumbers(originalUri);
-                lineNumbers.forEach(lineNum => resultLines.add(lineNum));
+        if (inclusiveFilters.length > 0) {
+            // Collect line numbers from inclusive filters using cached results
+            inclusiveFilters.forEach(filter => {
+                const cachedLines = filter.getMatchedLines(originalUri);
+                cachedLines.forEach((lineNum: number) => resultLines.add(lineNum));
             });
         } else {
-            // Include all lines if no positive filters
+            // Include all lines if no inclusive filters
             for (let i = 0; i < originalDoc.lineCount; i++) {
                 resultLines.add(i);
             }
-            // Remove excluded lines
-            excludeFilters.forEach(filter => {
-                const excludedLines = filter.getMatchedLineNumbers(originalUri);
-                excludedLines.forEach(lineNum => resultLines.delete(lineNum));
-            });
         }
+        
+        // Always subtract exclusive filters
+        exclusiveFilters.forEach(filter => {
+            const cachedLines = filter.getMatchedLines(originalUri);
+            cachedLines.forEach((lineNum: number) => resultLines.delete(lineNum));
+        });
 
         return Array.from(resultLines).sort((a, b) => a - b);
     }

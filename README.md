@@ -124,12 +124,39 @@ This enhanced version builds upon the original log-analysis extension with signi
 
 ## Development and Testing
 
-This extension now includes comprehensive testing:
+### Development Guide
 
-- **12 Test Cases**: Complete coverage of core functionality
-- **Command Behavior Testing**: Verification of all user commands
-- **State Management Testing**: Validation of project and filter state consistency
-- **Modern Test Framework**: Migration to VS Code's native test framework (`@vscode/test-cli`)
+If you want to contribute to this project or build it from source, please follow these steps:
+
+#### 1. Environment Setup
+Ensure you have [Node.js](https://nodejs.org/) and [Git](https://git-scm.com/) installed.
+```bash
+git clone https://github.com/sean10776/log-analysis.git
+cd log-analysis
+npm install
+```
+
+#### 2. Compilation
+The project is written in TypeScript and needs to be compiled before use or testing:
+- **Build**: Run `npm run compile` to build the project.
+- **Watch Mode**: Run `npm run watch` to automatically recompile on file changes.
+
+#### 3. Linting
+We use ESLint to maintain code quality and consistent style:
+- **Run Lint**: Run `npm run lint` to check for code issues.
+- **VS Code Integration**: We recommend installing the [ESLint extension](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) to see errors in real-time.
+
+#### 4. Testing
+This project includes a comprehensive automated test suite powered by `@vscode/test-cli`:
+- **Run Tests**: Run `npm test`. This will automatically trigger compilation via `pretest`.
+
+### Test Coverage and Quality
+
+The project currently features **23 test cases** covering core functionalities:
+- **Core Engine**: Validation of the highly optimized $O(m)$ combined regex matching algorithm and priority resolution.
+- **Focus Mode Logic**: Verification of content generation accuracy under various Inclusive/Exclusive filter combinations.
+- **Project Management**: Validation of project, group, and filter operations, including decentralized workspace storage.
+- **Command Behavior**: Testing of VS Code API interactions and command persistence.
 
 ## Handling Huge Files
 

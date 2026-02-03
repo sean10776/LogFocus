@@ -8,7 +8,7 @@
         "url": "https://github.com/sean10776/LogFocus.git"
     },
     "icon": "image/new_icon.png",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "engines": {
         "vscode": "^1.49.0"
     },
@@ -37,24 +37,24 @@
                 "icon": "$(dialog-close)"
             },
             {
-                "command": "logfocus.enableHighlight",
-                "title": "Enable Highlight",
+                "command": "logfocus.toggleHighlight",
+                "title": "Toggle Highlight",
                 "icon": "$(paintcan)"
             },
             {
-                "command": "logfocus.disableHighlight",
-                "title": "Disable Highlight",
-                "icon": "$(paintcan)"
-            },
-            {
-                "command": "logfocus.enableVisibility",
-                "title": "Enable Visbility",
+                "command": "logfocus.setFocusIncluded",
+                "title": "Include in Focus",
                 "icon": "$(eye)"
             },
             {
-                "command": "logfocus.disableVisibility",
-                "title": "Disable Visbility",
+                "command": "logfocus.setFocusExcluded",
+                "title": "Exclude from Focus",
                 "icon": "$(eye-closed)"
+            },
+            {
+                "command": "logfocus.setFocusNone",
+                "title": "Ignore in Focus",
+                "icon": "$(circle-slash)"
             },
             {
                 "command": "logfocus.turnOnFocusMode",
@@ -74,16 +74,6 @@
             {
                 "command": "logfocus.addFilter",
                 "title": "Add a Filter",
-                "icon": "$(plus)"
-            },
-            {
-                "command": "logfocus.enableExclude",
-                "title": "Exclude",
-                "icon": "$(dash)"
-            },
-            {
-                "command": "logfocus.disableExclude",
-                "title": "Include",
                 "icon": "$(plus)"
             },
             {
@@ -121,16 +111,24 @@
                 "icon": "$(export)"
             },
             {
-                "command": "logfocus.showFilterStats",
-                "title": "LogFocus: Show Filter and Cache Statistics"
-            },
-            {
                 "command": "logfocus.importProject",
                 "title": "Import Project",
                 "icon": "$(symbol-reference)"
+            },
+            {
+                "command": "logfocus.toggleExtension",
+                "title": "Toggle LogFocus Extension",
+                "icon": "$(eye)"
             }
         ],
         "menus": {
+            "editor/title": [
+                {
+                    "command": "logfocus.turnOnFocusMode",
+                    "when": "editorTextFocus && !logfocusFocusModeOn",
+                    "group": "navigation@4"
+                }
+            ],
             "view/item/context": [
                 {
                     "command": "logfocus.addFilter",
@@ -138,14 +136,19 @@
                     "group": "inline@1"
                 },
                 {
-                    "command": "logfocus.enableExclude",
-                    "when": "view == filters && viewItem =~ /^f-/ && viewItem =~ /-include/",
+                    "command": "logfocus.setFocusIncluded",
+                    "when": "view == filters && viewItem =~ /(excluded|none)$/",
                     "group": "inline@1.5"
                 },
                 {
-                    "command": "logfocus.disableExclude",
-                    "when": "view == filters && viewItem =~ /^f-/ && viewItem =~ /-exclude/",
-                    "group": "inline@1.5"
+                    "command": "logfocus.setFocusExcluded",
+                    "when": "view == filters && viewItem =~ /(included|none)$/",
+                    "group": "inline@1.6"
+                },
+                {
+                    "command": "logfocus.setFocusNone",
+                    "when": "view == filters && viewItem =~ /(included|excluded)$/",
+                    "group": "inline@1.7"
                 },
                 {
                     "command": "logfocus.editGroup",
@@ -168,24 +171,9 @@
                     "group": "inline@3"
                 },
                 {
-                    "command": "logfocus.disableHighlight",
-                    "when": "view == filters && viewItem =~ /-lit/",
+                    "command": "logfocus.toggleHighlight",
+                    "when": "view == filters",
                     "group": "inline@3"
-                },
-                {
-                    "command": "logfocus.enableHighlight",
-                    "when": "view == filters && viewItem =~ /-unlit/",
-                    "group": "inline@3"
-                },
-                {
-                    "command": "logfocus.disableVisibility",
-                    "when": "view == filters && viewItem =~ /-visible/",
-                    "group": "inline@4"
-                },
-                {
-                    "command": "logfocus.enableVisibility",
-                    "when": "view == filters && viewItem =~ /-invisible/",
-                    "group": "inline@4"
                 },
                 {
                     "command": "logfocus.deleteGroup",
@@ -205,12 +193,12 @@
             ],
             "view/title": [
                 {
-                    "command": "logfocus.addGroup",
+                    "command": "logfocus.addFilter",
                     "when": "view == filters",
                     "group": "navigation@1"
                 },
                 {
-                    "command": "logfocus.turnOnFocusMode",
+                    "command": "logfocus.addGroup",
                     "when": "view == filters",
                     "group": "navigation@2"
                 },
@@ -241,6 +229,11 @@
                 "command": "logfocus.turnOnFocusMode",
                 "key": "ctrl+h",
                 "mac": "cmd+h"
+            },
+            {
+                "command": "logfocus.toggleExtension",
+                "key": "ctrl+alt+l",
+                "mac": "cmd+alt+l"
             }
         ],
         "views": {

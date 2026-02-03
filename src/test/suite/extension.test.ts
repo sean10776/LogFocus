@@ -3,16 +3,22 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Filter } from '../../filter';
-import { createProject, createGroup, createState } from '../../utils';
 import { 
-    setHighlight, 
-    setVisibility, 
-    setExclude,
+    setFocusAction,
     deleteFilter,
     selectProject,
     exportProject,
-    importProject
+    importProject,
+    toggleHighlight
 } from '../../commands';
+import { 
+    createProject, 
+    createGroup, 
+    createState,
+    buildCombinedRegex, 
+    performCombinedAnalysis
+} from '../../utils';
+import { FilterMode, FocusAction } from '../../filter';
 
 // Import the internal _addProject function for testing
 const { _addProject } = require('../../commands');
@@ -77,7 +83,7 @@ suite('LogFocus Extension Test Suite', () => {
         assert.ok(group.filters, 'Group should have filters map');
     });
 
-    test('setHighlight command behavior', () => {
+    test('toggleHighlight command behavior', () => {
         // Create test state and data
         const testUri = vscode.Uri.file('/tmp/test');
         const state = createState(testUri, vscode.window.createOutputChannel("Test"));
@@ -99,15 +105,15 @@ suite('LogFocus Extension Test Suite', () => {
         assert.strictEqual(filter.isHighlighted, true, 'Filter should be highlighted by default');
         
         // Test disable highlight
-        setHighlight(false, filterTreeItem, state);
+        toggleHighlight(filterTreeItem, state);
         assert.strictEqual(filter.isHighlighted, false, 'Filter highlight should be disabled');
         
         // Test enable highlight
-        setHighlight(true, filterTreeItem, state);
+        toggleHighlight(filterTreeItem, state);
         assert.strictEqual(filter.isHighlighted, true, 'Filter highlight should be enabled');
     });
 
-    test('setVisibility command behavior', () => {
+    test('setFocusAction (None/Included) command behavior', () => {
         // Create test state and data
         const testUri = vscode.Uri.file('/tmp/test');
         const state = createState(testUri, vscode.window.createOutputChannel("Test"));
@@ -125,18 +131,18 @@ suite('LogFocus Extension Test Suite', () => {
         const filterTreeItem = { id: filter.id } as vscode.TreeItem;
         
         // Verify initial state
-        assert.strictEqual(filter.isShown, true, 'Filter should be visible by default');
+        assert.strictEqual(filter.focusAction, FocusAction.INCLUDED, 'Filter should be included by default');
         
-        // Test hide filter
-        setVisibility(false, filterTreeItem, state);
-        assert.strictEqual(filter.isShown, false, 'Filter should be hidden');
+        // Test set NONE
+        setFocusAction(FocusAction.NONE, filterTreeItem, state);
+        assert.strictEqual(filter.focusAction, FocusAction.NONE, 'Filter focus action should be NONE');
         
-        // Test show filter
-        setVisibility(true, filterTreeItem, state);
-        assert.strictEqual(filter.isShown, true, 'Filter should be visible');
+        // Test set INCLUDED
+        setFocusAction(FocusAction.INCLUDED, filterTreeItem, state);
+        assert.strictEqual(filter.focusAction, FocusAction.INCLUDED, 'Filter focus action should be INCLUDED');
     });
 
-    test('setExclude command behavior', () => {
+    test('setFocusAction (Excluded) command behavior', () => {
         // Create test state and data
         const testUri = vscode.Uri.file('/tmp/test');
         const state = createState(testUri, vscode.window.createOutputChannel("Test"));
@@ -151,15 +157,15 @@ suite('LogFocus Extension Test Suite', () => {
         const filterTreeItem = { id: filter.id } as vscode.TreeItem;
         
         // Verify initial state
-        assert.strictEqual(filter.isExclude, false, 'Filter should be include by default');
+        assert.strictEqual(filter.focusAction, FocusAction.INCLUDED, 'Filter should be included by default');
         
-        // Test set to exclude
-        setExclude(true, filterTreeItem, state);
-        assert.strictEqual(filter.isExclude, true, 'Filter should be exclude');
+        // Test set to EXCLUDED
+        setFocusAction(FocusAction.EXCLUDED, filterTreeItem, state);
+        assert.strictEqual(filter.focusAction, FocusAction.EXCLUDED, 'Filter focus action should be EXCLUDED');
         
-        // Test set to include
-        setExclude(false, filterTreeItem, state);
-        assert.strictEqual(filter.isExclude, false, 'Filter should be include');
+        // Test set back to NONE
+        setFocusAction(FocusAction.NONE, filterTreeItem, state);
+        assert.strictEqual(filter.focusAction, FocusAction.NONE, 'Filter focus action should be NONE');
     });
 
     test('deleteFilter command behavior', () => {
@@ -236,6 +242,8 @@ suite('LogFocus Extension Test Suite', () => {
         project.filters.set(filter2.id, filter2);
         group.filters.set(filter1.id, filter1);
         group.filters.set(filter2.id, filter2);
+        filter1.groupId = group.id;
+        filter2.groupId = group.id;
         state.projectsMap.set(project.name, project);
         state.selectedProject = project;
 
@@ -263,8 +271,8 @@ suite('LogFocus Extension Test Suite', () => {
             const exportedContent = JSON.parse(fs.readFileSync(exportPath, 'utf8'));
             assert.strictEqual(exportedContent.name, 'Export Test Project', 'Exported project name should match');
             assert.strictEqual(exportedContent.groups.length, 1, 'Exported project should have 1 group');
-            assert.strictEqual(exportedContent.groups[0].name, 'Test Group', 'Exported group name should match');
-            assert.strictEqual(exportedContent.groups[0].filters.length, 2, 'Exported group should have 2 filters');
+            assert.strictEqual(exportedContent.filters.length, 2, 'Exported project should have 2 filters');
+            assert.strictEqual(exportedContent.filters[0].groupId, group.id, 'Filter should have correct group ID');
 
             // Clean up
             if (fs.existsSync(exportPath)) {
@@ -414,5 +422,137 @@ suite('LogFocus Extension Test Suite', () => {
                 });
             }
         }
+    });
+
+    test('Algorithm: Priority resolution (highest priority match wins)', () => {
+        const filterHigh = new Filter(new RegExp('ERROR'));
+        filterHigh.priority = 100;
+        const highId = filterHigh.id;
+
+        const filterLow = new Filter(new RegExp('DATABASE'));
+        filterLow.priority = 10;
+        const lowId = filterLow.id;
+
+        const filters = [filterHigh, filterLow];
+        const { regex, filterMap } = buildCombinedRegex(filters);
+
+        // Line contains both 'DATABASE' and 'ERROR'
+        const text = "10:00 DATABASE ERROR: connection failed\n10:01 DATABASE: ok";
+        const { filterResults, linePriorityWinners } = performCombinedAnalysis(text, regex, filterMap);
+
+        const highMatches = filterResults.get(highId)!.lines;
+        const lowMatches = filterResults.get(lowId)!.lines;
+
+        // Both filters match line 0
+        assert.ok(highMatches.has(0), 'Line 0 should be matched by high priority filter');
+        assert.ok(lowMatches.has(0), 'Line 0 should ALSO be matched by low priority filter');
+        
+        // But highId should be the winner for coloring
+        assert.strictEqual(linePriorityWinners.get(0), highId, 'High priority filter should be the coloring winner for line 0');
+        
+        // Line 1 only has DATABASE
+        assert.ok(lowMatches.has(1), 'Line 1 should be matched by low priority filter');
+    });
+
+    test('Algorithm: Multi-match on same line (order of detection)', () => {
+        const filterA = new Filter(new RegExp('apple'));
+        filterA.priority = 10; // lower
+        const idA = filterA.id;
+
+        const filterB = new Filter(new RegExp('banana'));
+        filterB.priority = 100; // higher
+        const idB = filterB.id;
+
+        const filters = [filterA, filterB];
+        const { regex, filterMap } = buildCombinedRegex(filters);
+
+        // 'apple' appears BEFORE 'banana', but 'banana' has higher priority
+        const text = "I like apple and banana";
+        const { filterResults, linePriorityWinners } = performCombinedAnalysis(text, regex, filterMap);
+
+        assert.ok(filterResults.get(idB)!.lines.has(0), 'Filter B should match');
+        assert.ok(filterResults.get(idA)!.lines.has(0), 'Filter A should match');
+        assert.strictEqual(linePriorityWinners.get(0), idB, 'Higher priority filter B should be the coloring winner');
+    });
+
+    test('Filter Mode: TEXT matching handles special characters', () => {
+        const filter = new Filter(new RegExp('')); // placeholder
+        const textPattern = 'error.log* [crit]';
+        const escaped = textPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        
+        filter.mode = FilterMode.TEXT;
+        filter.textPattern = textPattern;
+        filter.setRegex(new RegExp(escaped));
+
+        assert.ok(filter.test('Something error.log* [crit] happened'), 'Should match exact text');
+        assert.ok(!filter.test('Something errorXlogY [crit] happened'), 'Should NOT match as regex');
+    });
+
+    test('Focus Mode Logic: content generation flow', () => {
+        const project = createProject('FocusTest');
+        
+        // Filter 1: Show 'error' (INCLUDED)
+        const f1 = new Filter(new RegExp('error'));
+        f1.focusAction = FocusAction.INCLUDED;
+        project.filters.set(f1.id, f1);
+
+        // Filter 2: Show 'warn' (INCLUDED)
+        const f2 = new Filter(new RegExp('warn'));
+        f2.focusAction = FocusAction.INCLUDED;
+        project.filters.set(f2.id, f2);
+
+        // Filter 3: Exclude 'ignore' (EXCLUDED)
+        const f3 = new Filter(new RegExp('ignore'));
+        f3.focusAction = FocusAction.EXCLUDED;
+        project.filters.set(f3.id, f3);
+
+        const text = [
+            "line 0: error",
+            "line 1: warn",
+            "line 2: info",
+            "line 3: error ignore this",
+            "line 4: warn ok"
+        ].join('\n');
+
+        // Build analysis results
+        const filters = Array.from(project.filters.values());
+        const { regex, filterMap } = buildCombinedRegex(filters);
+        const { filterResults } = performCombinedAnalysis(text, regex, filterMap);
+
+        // Map results back to filters
+        const uri = 'test-uri';
+        filterResults.forEach((data, id) => {
+            project.filters.get(id)?.updateCache(uri, Array.from(data.lines));
+        });
+
+        // Simulating the new generateFilteredContent logic:
+        // 1. Identify filters by action
+        const inclusiveFilters = filters.filter(f => f.focusAction === FocusAction.INCLUDED);
+        const exclusiveFilters = filters.filter(f => f.focusAction === FocusAction.EXCLUDED);
+
+        // 2. Start with all lines if no inclusive, otherwise start empty and union matched
+        let resultLines: Set<number> = new Set();
+        if (inclusiveFilters.length === 0) {
+            for (let i = 0; i < 5; i++) {resultLines.add(i);}
+        } else {
+            inclusiveFilters.forEach(f => {
+                const matched = f.getMatchedLines(uri) as number[];
+                matched.forEach(l => resultLines.add(l));
+            });
+        }
+
+        // 3. Subtract all exclusive matches
+        exclusiveFilters.forEach(f => {
+            const matched = f.getMatchedLines(uri) as number[];
+            matched.forEach(l => resultLines.delete(l));
+        });
+
+        const sorted = Array.from(resultLines).sort((a, b) => a - b);
+        
+        assert.ok(sorted.includes(0), 'Line 0 (error) should be shown');
+        assert.ok(sorted.includes(1), 'Line 1 (warn) should be shown');
+        assert.ok(!sorted.includes(2), 'Line 2 (info) should be hidden because it doesnt match any inclusive filter');
+        assert.ok(!sorted.includes(3), 'Line 3 should be excluded by f3 even though it matches f1');
+        assert.ok(sorted.includes(4), 'Line 4 should be shown');
     });
 });
