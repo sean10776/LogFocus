@@ -73,7 +73,7 @@ suite('LogFocus Engine & Focus Logic Test Suite', () => {
         // LOGIC
         const resultLines: Set<number> = new Set();
         if (inclusiveFilters.length === 0) {
-            for (let i = 0; i < lineCount; i++) resultLines.add(i);
+            for (let i = 0; i < lineCount; i++) {resultLines.add(i);}
         }
 
         exclusiveFilters.forEach(f => {

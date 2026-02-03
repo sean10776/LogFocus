@@ -91,7 +91,7 @@ export class FocusProvider implements vscode.TextDocumentContentProvider {
         const { inclusiveFilters, exclusiveFilters } = this.getActiveFiltersSorted();
         const allFilters = [...inclusiveFilters, ...exclusiveFilters];
         
-        if (allFilters.length === 0) return;
+        if (allFilters.length === 0) {return;}
         
         const text = document.getText();
         const { regex: combinedRegex, filterMap } = buildCombinedRegex(allFilters);

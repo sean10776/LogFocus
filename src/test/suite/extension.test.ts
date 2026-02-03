@@ -4,12 +4,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Filter } from '../../filter';
 import { 
-    setHighlight, 
     setFocusAction,
     deleteFilter,
     selectProject,
     exportProject,
-    importProject
+    importProject,
+    toggleHighlight
 } from '../../commands';
 import { 
     createProject, 
@@ -83,7 +83,7 @@ suite('LogFocus Extension Test Suite', () => {
         assert.ok(group.filters, 'Group should have filters map');
     });
 
-    test('setHighlight command behavior', () => {
+    test('toggleHighlight command behavior', () => {
         // Create test state and data
         const testUri = vscode.Uri.file('/tmp/test');
         const state = createState(testUri, vscode.window.createOutputChannel("Test"));
@@ -105,11 +105,11 @@ suite('LogFocus Extension Test Suite', () => {
         assert.strictEqual(filter.isHighlighted, true, 'Filter should be highlighted by default');
         
         // Test disable highlight
-        setHighlight(false, filterTreeItem, state);
+        toggleHighlight(filterTreeItem, state);
         assert.strictEqual(filter.isHighlighted, false, 'Filter highlight should be disabled');
         
         // Test enable highlight
-        setHighlight(true, filterTreeItem, state);
+        toggleHighlight(filterTreeItem, state);
         assert.strictEqual(filter.isHighlighted, true, 'Filter highlight should be enabled');
     });
 
@@ -533,7 +533,7 @@ suite('LogFocus Extension Test Suite', () => {
         // 2. Start with all lines if no inclusive, otherwise start empty and union matched
         let resultLines: Set<number> = new Set();
         if (inclusiveFilters.length === 0) {
-            for (let i = 0; i < 5; i++) resultLines.add(i);
+            for (let i = 0; i < 5; i++) {resultLines.add(i);}
         } else {
             inclusiveFilters.forEach(f => {
                 const matched = f.getMatchedLines(uri) as number[];

@@ -37,10 +37,10 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
     }
 
     async handleDrop(target: vscode.TreeItem | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
-        if (!this.project) return;
+        if (!this.project) {return;}
 
         const jsonData = dataTransfer.get('application/json');
-        if (!jsonData) return;
+        if (!jsonData) {return;}
 
         try {
             const dragDataStr = await jsonData.asString();
@@ -60,7 +60,7 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
             // 1. Move filters to their new group (if changed)
             for (const data of dragData) {
                 const filter = this.project.filters.get(data.filterId);
-                if (!filter) continue;
+                if (!filter) {continue;}
 
                 if (filter.groupId !== targetGroupId) {
                     // Remove from old group
@@ -92,7 +92,7 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
                     
                     // Find target index
                     let insertIdx = remaining.findIndex(f => f.id === targetFilterId);
-                    if (insertIdx === -1) insertIdx = 0; // Drop on group itself -> top
+                    if (insertIdx === -1) {insertIdx = 0;} // Drop on group itself -> top
 
                     // Insert dragged filters
                     const draggedFilters = dragData.map(d => this.project!.filters.get(d.filterId)!).filter(Boolean);
@@ -122,7 +122,7 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
 
                 // Find target index
                 let insertIdx = items.findIndex(item => item.id === targetFilterId || item.id === targetGroupId);
-                if (insertIdx === -1) insertIdx = 0;
+                if (insertIdx === -1) {insertIdx = 0;}
 
                 // Insert dragged
                 const draggedItems: Sortable[] = dragData.map(d => ({
@@ -137,10 +137,10 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
                     const priority = (items.length - i) * 10;
                     if (item.type === 'filter') {
                         const f = this.project!.filters.get(item.id);
-                        if (f) f.priority = priority;
+                        if (f) {f.priority = priority;}
                     } else {
                         const g = this.project!.groups.get(item.id);
-                        if (g) g.priority = priority;
+                        if (g) {g.priority = priority;}
                     }
                 });
             }
@@ -159,7 +159,7 @@ export class FilterTreeViewProvider implements vscode.TreeDataProvider<vscode.Tr
     }
 
     getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
-        if (!this.project) return Promise.resolve([]);
+        if (!this.project) {return Promise.resolve([]);}
 
         if (element === undefined) {
             // Root elements: Groups and Top-level Filters
@@ -279,6 +279,7 @@ export class FilterItem extends vscode.TreeItem {
         }
         
         this.contextValue = contextValue as any;
+        console.log('FilterItem contextValue set to:', this.contextValue);
 
         const count = filter.count;
         if (count > 0) {

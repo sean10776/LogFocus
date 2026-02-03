@@ -8,7 +8,7 @@
         "url": "https://github.com/sean10776/LogFocus.git"
     },
     "icon": "image/new_icon.png",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "engines": {
         "vscode": "^1.49.0"
     },
@@ -37,13 +37,8 @@
                 "icon": "$(dialog-close)"
             },
             {
-                "command": "logfocus.enableHighlight",
-                "title": "Enable Highlight",
-                "icon": "$(paintcan)"
-            },
-            {
-                "command": "logfocus.disableHighlight",
-                "title": "Disable Highlight",
+                "command": "logfocus.toggleHighlight",
+                "title": "Toggle Highlight",
                 "icon": "$(paintcan)"
             },
             {
@@ -116,17 +111,24 @@
                 "icon": "$(export)"
             },
             {
-                "command": "logfocus.toggleFiltering",
-                "title": "Toggle Filtering Mode",
-                "icon": "$(filter)"
-            },
-            {
                 "command": "logfocus.importProject",
                 "title": "Import Project",
                 "icon": "$(symbol-reference)"
+            },
+            {
+                "command": "logfocus.toggleExtension",
+                "title": "Toggle LogFocus Extension",
+                "icon": "$(eye)"
             }
         ],
         "menus": {
+            "editor/title": [
+                {
+                    "command": "logfocus.turnOnFocusMode",
+                    "when": "editorTextFocus && !logfocusFocusModeOn",
+                    "group": "navigation@4"
+                }
+            ],
             "view/item/context": [
                 {
                     "command": "logfocus.addFilter",
@@ -169,13 +171,8 @@
                     "group": "inline@3"
                 },
                 {
-                    "command": "logfocus.disableHighlight",
-                    "when": "view == filters && viewItem =~ /-lit-/",
-                    "group": "inline@3"
-                },
-                {
-                    "command": "logfocus.enableHighlight",
-                    "when": "view == filters && viewItem =~ /-unlit-/",
+                    "command": "logfocus.toggleHighlight",
+                    "when": "view == filters",
                     "group": "inline@3"
                 },
                 {
@@ -206,11 +203,6 @@
                     "group": "navigation@2"
                 },
                 {
-                    "command": "logfocus.turnOnFocusMode",
-                    "when": "view == filters",
-                    "group": "navigation@4"
-                },
-                {
                     "command": "logfocus.addProject",
                     "when": "view == filters.settings",
                     "group": "navigation@1"
@@ -237,6 +229,11 @@
                 "command": "logfocus.turnOnFocusMode",
                 "key": "ctrl+h",
                 "mac": "cmd+h"
+            },
+            {
+                "command": "logfocus.toggleExtension",
+                "key": "ctrl+alt+l",
+                "mac": "cmd+alt+l"
             }
         ],
         "views": {

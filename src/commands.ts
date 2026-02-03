@@ -37,6 +37,12 @@ export function updateFilterTreeView(state: State) {
         return;
     }
     state.filterTreeViewProvider.update(project);
+    
+    // set clause context for focus mode button enabling/disabling
+    if (vscode.window.activeTextEditor) {
+        const isFocus = FocusProvider.isFocusUri(vscode.window.activeTextEditor.document.uri);
+        vscode.commands.executeCommand('setContext', 'logfocusFocusModeOn', isFocus);
+    }
 }
 
 /**
@@ -46,7 +52,7 @@ async function applyFilterHighlights(
     state: State,
     editors: readonly EditorInfo[]
 ): Promise<void> {
-    if (!state.selectedProject || !state.selectedProject.filteringEnabled) {
+    if (!state.selectedProject) {
         return;
     }
 
@@ -141,6 +147,11 @@ function refreshFocusModeEditors(state: State, editors: readonly EditorInfo[]) {
  * - Updates filter tree view (to reflect new count values)
  */
 export function refreshEditors(state: State) {
+    // Check if extension is globally enabled
+    if (!state.extensionEnabled) {
+        return;
+    }
+    
     const filters = state.selectedProject?.filters;
     if (!filters || filters.size === 0) {
         return;
@@ -173,8 +184,7 @@ export function refreshEditors(state: State) {
 }
 
 //set highlight for matched lines
-export function setHighlight(
-    isHighlighted: boolean,
+export function toggleHighlight(
     treeItem: vscode.TreeItem,
     state: State
 ) {
@@ -184,9 +194,9 @@ export function setHighlight(
     if (id.startsWith('group-')) {
         const group = state.selectedProject?.groups.get(id);
         if (group) {
-            group.isHighlighted = isHighlighted;
+            group.isHighlighted = !group.isHighlighted;
             group.filters.forEach((filter) => {
-                filter.isHighlighted = isHighlighted;
+                filter.isHighlighted = !filter.isHighlighted;
             });
         }
     } 
@@ -194,7 +204,7 @@ export function setHighlight(
     else if (id.startsWith('filter-')) {
         const filter = state.selectedProject?.filters.get(id);
         if (filter) {
-            filter.isHighlighted = isHighlighted;
+            filter.isHighlighted = !filter.isHighlighted;
         }
     }
 
@@ -204,21 +214,47 @@ export function setHighlight(
 }
 
 /**
- * Toggle the global filtering mode for the current project
+ * Clear all filter decorations from visible editors
  */
-export function toggleFilteringMode(state: State): void {
-    if (!state.selectedProject) {
+function clearAllDecorations(state: State): void {
+    const filters = state.selectedProject?.filters;
+    if (!filters) {
         return;
     }
 
-    state.selectedProject.filteringEnabled = !state.selectedProject.filteringEnabled;
-    
-    vscode.window.showInformationMessage(
-        `Filtering mode: ${state.selectedProject.filteringEnabled ? 'ON' : 'OFF'}`
-    );
+    vscode.window.visibleTextEditors.forEach(editor => {
+        filters.forEach(filter => {
+            if (filter.decoration) {
+                editor.setDecorations(filter.decoration, []);
+            }
+        });
+    });
+}
 
-    saveSettings(state.globalStorageUri, state.projectsMap, state.selectedProject);
-    refreshEditors(state);
+/**
+ * Toggle the global extension on/off
+ */
+export function toggleExtension(state: State, statusBarItem: vscode.StatusBarItem): void {
+    state.extensionEnabled = !state.extensionEnabled;
+
+    // Update status bar
+    if (state.extensionEnabled) {
+        statusBarItem.text = "$(eye) LogFocus";
+        statusBarItem.tooltip = "LogFocus is enabled. Click to disable.";
+        statusBarItem.backgroundColor = undefined;
+        
+        // Re-enable: refresh all editors
+        refreshEditors(state);
+        vscode.window.showInformationMessage('LogFocus: Enabled');
+    } else {
+        statusBarItem.text = "$(circle-slash) LogFocus";
+        statusBarItem.tooltip = "LogFocus is disabled. Click to enable.";
+        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        
+        // Disable: clear all decorations
+        clearAllDecorations(state);
+        vscode.window.showInformationMessage('LogFocus: Disabled');
+    }
 }
 
 //turn on focus mode for the active editor. Will create a new tab if not already for the virtual document
@@ -295,7 +331,9 @@ export function deleteFilter(treeItem: vscode.TreeItem, state: State) {
 }
 
 export async function addFilter(treeItem: vscode.TreeItem | undefined, state: State) {
-    if (!state.selectedProject) return;
+    if (!state.selectedProject) {
+        return;
+    }
 
     // 1. Choose Mode
     const modePick = await vscode.window.showQuickPick(
@@ -306,7 +344,9 @@ export async function addFilter(treeItem: vscode.TreeItem | undefined, state: St
         { title: "Select Filter Mode" }
     );
 
-    if (!modePick) return;
+    if (!modePick) {
+        return;
+    }
 
     // 2. Input Pattern
     const pattern = await vscode.window.showInputBox({
@@ -316,7 +356,9 @@ export async function addFilter(treeItem: vscode.TreeItem | undefined, state: St
         ignoreFocusOut: false,
     });
 
-    if (!pattern) return;
+    if (!pattern) {
+        return;
+    }
 
     try {
         let regex: RegExp;
@@ -372,7 +414,7 @@ export async function editFilter(treeItem: vscode.TreeItem, state: State) {
         }
     );
 
-    if (!modePick) return;
+    if (!modePick) {return;}
 
     // 2. Input Pattern
     const pattern = await vscode.window.showInputBox({
@@ -383,7 +425,7 @@ export async function editFilter(treeItem: vscode.TreeItem, state: State) {
         value: modePick.value === FilterMode.TEXT && filter.textPattern ? filter.textPattern : filter.regex.source,
     });
 
-    if (pattern === undefined) return;
+    if (pattern === undefined) {return;}
 
     try {
         let regex: RegExp;

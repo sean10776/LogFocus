@@ -35,7 +35,6 @@ export type Project = {
     name: string;
     id: string;
     selected: boolean;
-    filteringEnabled: boolean; // global filter toggle
 };
 export function createProject(name: string): Project {
     return {
@@ -43,8 +42,7 @@ export function createProject(name: string): Project {
         groups: new Map<string, Group>(),
         name: name,
         id: name, //,
-        selected: false,
-        filteringEnabled: true
+        selected: false
     };
 };
 
@@ -58,6 +56,7 @@ export type State = {
     focusProvider: FocusProvider;
     globalStorageUri: vscode.Uri;
     outputChannel: vscode.OutputChannel;
+    extensionEnabled: boolean; // Global extension on/off switch
 };
 export function createState(globalStorageUri: vscode.Uri, outputChannel: vscode.OutputChannel): State {
     return {
@@ -67,7 +66,8 @@ export function createState(globalStorageUri: vscode.Uri, outputChannel: vscode.
         projectTreeViewProvider: new ProjectTreeViewProvider([]),
         focusProvider: new FocusProvider(),
         globalStorageUri: globalStorageUri,
-        outputChannel: outputChannel
+        outputChannel: outputChannel,
+        extensionEnabled: true // Default to enabled
     };
 }
 

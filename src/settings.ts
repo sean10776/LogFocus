@@ -141,7 +141,6 @@ export function saveProject(storageUri: vscode.Uri, project: Project) {
     const content = JSON.stringify(
         {
             name: project.name,
-            filteringEnabled: project.filteringEnabled,
             groups: Array.from(project.groups.values()).map((group) => ({
                 id: group.id,
                 name: group.name,
@@ -190,7 +189,6 @@ export function loadProject(projectFile: string): Project | null {
         const parsed = JSON.parse(text);
 
         const project: Project = createProject(parsed.name);
-        project.filteringEnabled = parsed.filteringEnabled ?? true;
 
         // Legacy support and new structure support
         if (parsed.groups && !parsed.filters) {

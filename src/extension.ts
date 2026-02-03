@@ -4,7 +4,6 @@ import {
     deleteFilter,
     editFilter,
     refreshEditors,
-    setHighlight,
     setFocusAction,
     turnOnFocusMode,
     addGroup,
@@ -18,7 +17,8 @@ import {
     exportProject,
     importProject,
     updateFilterTreeView,
-    toggleFilteringMode,
+    toggleExtension,
+    toggleHighlight,
 } from "./commands";
 import { createState, State } from "./utils";
 import { openSettings, saveSettings } from "./settings";
@@ -35,6 +35,17 @@ export function activate(context: vscode.ExtensionContext) {
     
     const state: State = createState(context.globalStorageUri, outputChannel);
     refreshSettings(state);
+
+    // Create status bar item for extension toggle
+    const statusBarItem = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Left,
+        100
+    );
+    statusBarItem.text = "$(eye) LogFocus";
+    statusBarItem.tooltip = "LogFocus is enabled. Click to disable.";
+    statusBarItem.command = "logfocus.toggleExtension";
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
 
     //tell vs code to open focus:... uris with state.focusProvider
     const disposableFocus = vscode.workspace.registerTextDocumentContentProvider(
@@ -106,6 +117,12 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(disposableOnDidChangeActiveTextEditor);
 
     //register commands
+    const disposableToggleExtension = vscode.commands.registerCommand(
+        "logfocus.toggleExtension",
+        () => toggleExtension(state, statusBarItem)
+    );
+    context.subscriptions.push(disposableToggleExtension);
+
     const disposableAddProject = vscode.commands.registerCommand(
         "logfocus.addProject",
         () => addProject(state));
@@ -251,29 +268,17 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(disposibleDeleteFilter);
 
-    const disposibleEnableHighlight = vscode.commands.registerCommand(
-        "logfocus.enableHighlight",
+    const disposibleToggleHighlight = vscode.commands.registerCommand(
+        "logfocus.toggleHighlight",
         (treeItem: vscode.TreeItem) => {
             if (treeItem === undefined) {
                 vscode.window.showErrorMessage('This command is executed with button in FILTERS');
                 return;
             }
-            setHighlight(true, treeItem, state);
+            toggleHighlight(treeItem, state);
         }
     );
-    context.subscriptions.push(disposibleEnableHighlight);
-
-    const disposibleDisableHighlight = vscode.commands.registerCommand(
-        "logfocus.disableHighlight",
-        (treeItem: vscode.TreeItem) => {
-            if (treeItem === undefined) {
-                vscode.window.showErrorMessage('This command is executed with button in FILTERS');
-                return;
-            }
-            setHighlight(false, treeItem, state);
-        }
-    );
-    context.subscriptions.push(disposibleDisableHighlight);
+    context.subscriptions.push(disposibleToggleHighlight);
 
     const disposibleAddGroup = vscode.commands.registerCommand(
         "logfocus.addGroup",
@@ -304,14 +309,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
     context.subscriptions.push(disposibleDeleteGroup);
-
-    const disposableToggleFiltering = vscode.commands.registerCommand(
-        "logfocus.toggleFiltering",
-        () => {
-            toggleFilteringMode(state);
-        }
-    );
-    context.subscriptions.push(disposableToggleFiltering);
 }
 
 // this method is called when your extension is deactivated
